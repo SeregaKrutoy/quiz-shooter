@@ -345,8 +345,9 @@ export function buildWorld(map: MapData, theme: MapTheme, quality: 'low' | 'high
   // далёкий город вокруг арены
   const rnd = mulberry32(seed * 13 + 7);
   const far: Box[] = [];
-  for (let i = 0; i < 70; i++) {
-    const a = (i / 70) * Math.PI * 2 + rnd() * 0.05;
+  const farCount = quality === 'high' ? 64 : 32;
+  for (let i = 0; i < farCount; i++) {
+    const a = (i / farCount) * Math.PI * 2 + rnd() * 0.05;
     const r = half + 22 + rnd() * 80;
     far.push({ x: Math.cos(a) * r, z: Math.sin(a) * r, hw: 3 + rnd() * 6, hd: 3 + rnd() * 6, h: 8 + rnd() * 34, kind: 'building', c: Math.floor(rnd() * 3) });
   }

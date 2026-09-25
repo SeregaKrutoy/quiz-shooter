@@ -1,17 +1,17 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Engine, FeedItem, HudData, Phase, PhaseInfo } from '@/game/client/engine';
+import { ChatMsg, Engine, FeedItem, HudData, Phase, PhaseInfo } from '@/game/client/engine';
 import { LocalTransport, OnlineTransport, Transport } from '@/game/client/transport';
 import { addScore, markTipsSeen, Prefs, Profile, tipsSeen, type KeyBindings, type TouchLayout } from '@/game/client/storage';
 import { sfx } from '@/game/client/audio';
 import { QuestionDeck } from '@/game/shared/questions';
-import type { ExamPack, MatchNet, MatchSettings, PlayerNet, TopicId, WeaponId } from '@/game/shared/types';
+import type { ExamDiff, ExamPack, MatchNet, MatchSettings, PlayerNet, TopicId, WeaponId } from '@/game/shared/types';
 import ExamOverlay from './ExamOverlay';
 import TouchControls from './TouchControls';
 import OrientationGate from './OrientationGate';
 import MatchSetup from './MatchSetup';
-import { Announce, GameOverScreen, Hud, LobbyPanel, PauseMenu, Popup, Scoreboard } from './GameOverlays';
+import { Announce, GameChat, GameOverScreen, Hud, LobbyPanel, PauseMenu, Popup, Scoreboard } from './GameOverlays';
 import { Modal } from './ui';
 
 export type GameConfig = { kind: 'solo'; settings: MatchSettings } | { kind: 'online'; code: string; id: string; secret: string };
@@ -49,6 +49,11 @@ export default function GameView({ config, profile, prefs, touch, touchLayout, k
   const [examKey, setExamKey] = useState(0);
   const [showTips, setShowTips] = useState(false);
   const [fps, setFps] = useState(0);
+  const [chat, setChat] = useState<ChatMsg[]>([]);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [packsState, setPacksState] = useState<ExamPack[]>(config.kind === 'solo' ? config.settings.packs ?? [] : []);
+  const packsVerRef = useRef(-1);
+  const transportRef = useRef<Transport | null>(null);
   const phaseRef = useRef<Phase>('loading');
   const savedMatch = useRef(-1);
   const tipsDone = useRef(false);
@@ -62,6 +67,7 @@ export default function GameView({ config, profile, prefs, touch, touchLayout, k
     if (!canvas || !overlay) return;
     const transport: Transport =
       config.kind === 'solo' ? new LocalTransport(config.settings, profile) : new OnlineTransport(config.code, config.id, config.secret);
+    transportRef.current = transport;
     let eng: Engine;
     try {
       eng = new Engine({
@@ -90,7 +96,17 @@ export default function GameView({ config, profile, prefs, touch, touchLayout, k
             setPopups((a) => [...a.slice(-3), { id, text, color: color ?? '#ffffff' }]);
             window.setTimeout(() => setPopups((a) => a.filter((x) => x.id !== id)), 1350);
           },
-          match: (m, players) => setInfo({ m, players }),
+          match: (m, players) => {
+            setInfo({ m, players });
+            if (m.packsVer !== packsVerRef.current) {
+              packsVerRef.current = m.packsVer;
+              const ver = m.packsVer;
+              transport.getPacks().then((packs) => {
+                if (packsVerRef.current === ver) setPacksState(packs);
+              });
+            }
+          },
+          chat: (msg) => setChat((c) => [...c.slice(-39), msg]),
           pauseRequest: (toggle) => {
             const p = phaseRef.current;
             if (p === 'exam' || p === 'over' || p === 'lobby' || p === 'loading') return;
@@ -169,17 +185,39 @@ export default function GameView({ config, profile, prefs, touch, touchLayout, k
   }, [phase]);
 
   const topics: TopicId[] = info?.m.settings.topics ?? (config.kind === 'solo' ? config.settings.topics : ['flags', 'history', 'law']);
-  const packs: ExamPack[] = info?.m.settings.packs ?? (config.kind === 'solo' ? (config.settings.packs ?? []) : []);
-  const deckKey = `${[...topics].sort().join(',')}#${packs.map((q) => `${q.id}:${q.questions.length}`).sort().join('|')}`;
+  const packs: ExamPack[] = packsState;
+  const ticketDiff = info?.m.settings.ticketDiff ?? (config.kind === 'solo' ? config.settings.ticketDiff : 'any');
+  const deckKey = `${[...topics].sort().join(',')}#${packs.map((q) => `${q.id}:${q.questions.length}`).sort().join('|')}#${ticketDiff}`;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const deck = useMemo(() => new QuestionDeck(topics, packs), [deckKey]);
+  const deck = useMemo(() => new QuestionDeck(topics, packs, ticketDiff), [deckKey]);
 
-  const onExamDone = useCallback((w: WeaponId, correct: boolean, time: number, topic: TopicId) => {
+  const onExamDone = useCallback((w: WeaponId, correct: boolean, time: number, topic: TopicId, d: ExamDiff) => {
     const e = engineRef.current;
     if (!e) return;
-    e.respawn(w, correct, time, topic);
+    e.respawn(w, correct, time, topic, d);
     e.lockPointer();
   }, []);
+
+  const sendChat = useCallback((t: string) => {
+    engineRef.current?.sendChat(t);
+  }, []);
+
+  // открыть чат по Enter / T
+  useEffect(() => {
+    if (config.kind !== 'online') return;
+    const onKey = (e: KeyboardEvent) => {
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA')) return;
+      const p = phaseRef.current;
+      if (!(p === 'play' || p === 'countdown')) return;
+      if (e.key === 'Enter' || e.code === 'KeyT') {
+        e.preventDefault();
+        setChatOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [config.kind]);
 
   const resume = () => {
     setPaused(false);
@@ -215,7 +253,18 @@ export default function GameView({ config, profile, prefs, touch, touchLayout, k
       )}
 
       {touch && engine && inPlay && !paused && (
-        <TouchControls input={engine.inputRef} sens={prefs.sens} layout={touchLayout} onPause={() => setPaused(true)} onBoard={setBoard} />
+        <TouchControls
+          input={engine.inputRef}
+          sens={prefs.sens}
+          layout={touchLayout}
+          onPause={() => setPaused(true)}
+          onBoard={setBoard}
+          onChat={config.kind === 'online' ? () => setChatOpen(true) : undefined}
+        />
+      )}
+
+      {config.kind === 'online' && inPlay && !paused && (
+        <GameChat chat={chat} open={chatOpen} touch={touch} onOpen={() => setChatOpen(true)} onClose={() => setChatOpen(false)} onSend={sendChat} />
       )}
 
       {prefs.showFps && (
@@ -277,13 +326,15 @@ export default function GameView({ config, profile, prefs, touch, touchLayout, k
           }}
           onSettings={() => setEditing(true)}
           onExit={onExit}
+          chat={chat}
+          onChat={sendChat}
         />
       )}
 
       {editing && info && (
         <Modal onClose={() => setEditing(false)}>
           <MatchSetup
-            initial={info.m.settings}
+            initial={{ ...info.m.settings, packs: packsState }}
             variant="edit"
             submitLabel="Сохранить настройки"
             onCancel={() => setEditing(false)}

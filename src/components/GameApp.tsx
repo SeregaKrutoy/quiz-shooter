@@ -73,7 +73,7 @@ export default function GameApp() {
 
   const quick = () => {
     const base = loadSettings();
-    const layouts: MapLayout[] = ['arena', 'city', 'warehouse', 'ruins'];
+    const layouts: MapLayout[] = ['arena', 'city', 'warehouse', 'ruins', 'fort', 'school', 'bunker'];
     const themes: MapTheme[] = ['day', 'sunset', 'night', 'snow'];
     startSolo({
       mode: 'coop',
@@ -86,6 +86,8 @@ export default function GameApp() {
       },
       topics: base.topics.length ? base.topics : ['flags', 'history', 'law'],
       packs: [],
+      ticketDiff: 'any',
+      itemToggles: { ...base.itemToggles },
       bots: 7,
       difficulty: 'normal',
       duration: 180,

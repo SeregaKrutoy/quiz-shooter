@@ -11,6 +11,7 @@ interface Props {
   layout: TouchLayout;
   onPause: () => void;
   onBoard: (show: boolean) => void;
+  onChat?: () => void;
 }
 
 const LABELS: Record<TouchBtnId, string> = {
@@ -21,9 +22,10 @@ const LABELS: Record<TouchBtnId, string> = {
   swap: '⇄',
   pause: '❚❚',
   board: '☰',
+  chat: '💬',
 };
 
-export default function TouchControls({ input, sens, layout, onPause, onBoard }: Props) {
+export default function TouchControls({ input, sens, layout, onPause, onBoard, onChat }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const baseRef = useRef<HTMLDivElement>(null);
   const knobRef = useRef<HTMLDivElement>(null);
@@ -189,6 +191,7 @@ export default function TouchControls({ input, sens, layout, onPause, onBoard }:
 
       <button data-tbtn="1" className="tbtn" style={styleFor('pause')} {...tap(onPause)}>{LABELS.pause}</button>
       <button data-tbtn="1" className="tbtn" style={styleFor('board')} {...tap(() => onBoard(true))} onPointerUp={() => onBoard(false)}>{LABELS.board}</button>
+      {onChat && <button data-tbtn="1" className="tbtn" style={styleFor('chat')} {...tap(onChat)}>{LABELS.chat}</button>}
 
       <button data-tbtn="1" className="tbtn" style={styleFor('fire')} data-on={fire} {...fireProps}>{LABELS.fire}</button>
       <button data-tbtn="1" className="tbtn" style={styleFor('jump')} {...tap(() => input.press('jump'))}>{LABELS.jump}</button>

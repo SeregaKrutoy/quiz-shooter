@@ -5,7 +5,7 @@ import FlagSvg from './FlagSvg';
 import { sfx } from '@/game/client/audio';
 import { PreparedQuestion, QuestionDeck } from '@/game/shared/questions';
 import {
-  answerPoints, availableWeapons, EXAM_TIME, ShotWeapon, TOPIC_INFO, TopicId, unlockedCount, WEAPON_ORDER, WeaponId, WEAPONS,
+  answerPoints, availableWeapons, EXAM_DIFF_INFO, ExamDiff, ShotWeapon, TOPIC_INFO, TopicId, unlockedCount, WEAPON_ORDER, WeaponId, WEAPONS,
 } from '@/game/shared/types';
 
 const ICONS: Record<WeaponId, string> = { rpg: '🚀', lmg: '🔥', sniper: '🎯', rifle: '⚡', shotgun: '💥', smg: '🌀', pistol: '🔫' };
@@ -15,18 +15,19 @@ interface Props {
   entrance: boolean;
   killer: string | null;
   killerWeapon: ShotWeapon | null;
-  onDone: (w: WeaponId, correct: boolean, time: number, topic: TopicId) => void;
+  onDone: (w: WeaponId, correct: boolean, time: number, topic: TopicId, d: ExamDiff) => void;
 }
 
 type Stage = 'question' | 'result' | 'pick';
 
 export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
   const [q] = useState<PreparedQuestion>(() => deck.draw());
+  const T = q.time;
   const [stage, setStage] = useState<Stage>('question');
   const [elapsed, setElapsed] = useState(0);
   const [picked, setPicked] = useState<number | null>(null);
   const [correct, setCorrect] = useState(false);
-  const [answerTime, setAnswerTime] = useState(EXAM_TIME);
+  const [answerTime, setAnswerTime] = useState(T);
   const [pickLeft, setPickLeft] = useState(8);
   const startRef = useRef(0);
   const lastTick = useRef(-1);
@@ -39,7 +40,7 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
   const choose = useCallback(
     (idx: number | null) => {
       if (stageRef.current !== 'question') return;
-      const t = Math.min(EXAM_TIME, (performance.now() - startRef.current) / 1000);
+      const t = Math.min(T, (performance.now() - startRef.current) / 1000);
       const ok = idx !== null && idx === q.answer;
       setPicked(idx);
       setCorrect(ok);
@@ -53,7 +54,7 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
         stageRef.current = 'pick';
       }, ok ? 1200 : 2600);
     },
-    [q.answer],
+    [q.answer, T],
   );
 
   const finish = useCallback(
@@ -61,9 +62,9 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
       if (doneRef.current) return;
       doneRef.current = true;
       sfx.click();
-      onDone(w, correct, answerTime, q.topic);
+      onDone(w, correct, answerTime, q.topic, q.d);
     },
-    [correct, answerTime, q.topic, onDone],
+    [correct, answerTime, q.topic, q.d, onDone],
   );
 
   useEffect(() => {
@@ -72,21 +73,21 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
       if (stageRef.current !== 'question') return;
       const e = (performance.now() - startRef.current) / 1000;
       setElapsed(e);
-      const left = Math.ceil(EXAM_TIME - e);
+      const left = Math.ceil(T - e);
       if (left <= 5 && left !== lastTick.current && left > 0) sfx.tick(true);
       lastTick.current = left;
-      const u = unlockedCount(true, e);
+      const u = unlockedCount(true, e, T);
       if (u < lastUnlocked.current) {
         lastUnlocked.current = u;
         sfx.lock();
         setLockPulse((p) => p + 1);
       }
-      if (e >= EXAM_TIME) choose(null);
+      if (e >= T) choose(null);
     }, 100);
     return () => window.clearInterval(id);
-  }, [choose]);
+  }, [choose, T]);
 
-  const avail = stage === 'question' ? availableWeapons(true, elapsed) : availableWeapons(correct, answerTime);
+  const avail = stage === 'question' ? availableWeapons(true, elapsed, T) : availableWeapons(correct, answerTime, T);
 
   useEffect(() => {
     if (stage !== 'pick') return;
@@ -94,10 +95,10 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
     const id = window.setInterval(() => {
       const left = 8 - (performance.now() - start) / 1000;
       setPickLeft(Math.max(0, left));
-      if (left <= 0) finish(availableWeapons(correct, answerTime)[0]);
+      if (left <= 0) finish(availableWeapons(correct, answerTime, T)[0]);
     }, 100);
     return () => window.clearInterval(id);
-  }, [stage, correct, answerTime, finish]);
+  }, [stage, correct, answerTime, finish, T]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -106,7 +107,7 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
         e.preventDefault();
         choose(n - 1);
       } else if (stageRef.current === 'pick') {
-        const list = availableWeapons(correct, answerTime);
+        const list = availableWeapons(correct, answerTime, T);
         if (n >= 1 && n <= WEAPON_ORDER.length) {
           const w = WEAPON_ORDER[n - 1];
           if (list.includes(w)) finish(w);
@@ -118,10 +119,11 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [choose, finish, correct, answerTime]);
+  }, [choose, finish, correct, answerTime, T]);
 
-  const left = Math.max(0, EXAM_TIME - (stage === 'question' ? elapsed : answerTime));
-  const frac = left / EXAM_TIME;
+  const left = Math.max(0, T - (stage === 'question' ? elapsed : answerTime));
+  const frac = left / T;
+  const diff = EXAM_DIFF_INFO[q.d];
   const barColor = frac > 0.5 ? '#2fbf71' : frac > 0.2 ? '#f0a500' : '#e5383b';
   const topic = TOPIC_INFO[q.topic];
   const timedOut = stage !== 'question' && picked === null;
@@ -150,8 +152,13 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
           <div className="relative z-10">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="text-[11px] font-black tracking-[0.2em] text-[#6b5e4b] uppercase sm:text-xs">Экзаменационный билет № {ticketNo}</div>
-              <div className="max-w-full truncate rounded-full px-3 py-1 text-xs font-black text-white uppercase" style={{ background: badgeBg }}>
-                {topic.icon} {badgeLabel}
+              <div className="flex max-w-full items-center gap-1.5">
+                <div className="truncate rounded-full px-3 py-1 text-xs font-black text-white uppercase" style={{ background: badgeBg }}>
+                  {topic.icon} {badgeLabel}
+                </div>
+                <div className="rounded-full px-2.5 py-1 text-[11px] font-black whitespace-nowrap text-[#1b1405] uppercase" style={{ background: diff.color }} title={`${diff.time} секунд на ответ`}>
+                  {diff.title} · {diff.time} с
+                </div>
               </div>
             </div>
 
@@ -163,6 +170,13 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
             </div>
 
             <div className="exam-q mt-4 text-lg leading-snug font-extrabold sm:text-2xl">{q.q}</div>
+
+            {q.img && (
+              <div className="exam-flag mt-3 flex justify-center">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={q.img} alt="Иллюстрация к вопросу" className="max-h-[220px] max-w-full rounded-lg border-2 border-black/20 object-contain shadow-lg" />
+              </div>
+            )}
 
             {q.flag && (
               <div className="exam-flag mt-3 flex justify-center">
@@ -200,7 +214,7 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
               <div className="mt-4 flex flex-col items-center gap-2 text-center sm:flex-row sm:text-left">
                 <div className={`stamp text-2xl sm:text-3xl ${correct ? 'text-[#1f9d57]' : 'text-[#d62839]'}`}>{correct ? 'Сдано!' : timedOut ? 'Время вышло' : 'Не сдано'}</div>
                 <div className="text-sm font-semibold text-[#4a4034] sm:ml-3">
-                  {correct ? <b>+{answerPoints(true, answerTime)} очков за ответ. </b> : <b>Правильно: «{q.options[0]}». </b>}
+                  {correct ? <b>+{answerPoints(true, answerTime, T, q.d)} очков за ответ. </b> : <b>Правильно: «{q.options[0]}». </b>}
                   {q.note}
                 </div>
               </div>
@@ -212,7 +226,7 @@ export default function ExamOverlay({ deck, entrance, killer, onDone }: Props) {
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div className="label">{stage === 'pick' ? 'Выберите оружие (клавиши 1–7)' : 'Оружие на выбор'}</div>
             <div className="text-xs font-bold text-white/60">
-              {stage === 'question' && 'Каждые 5 секунд лучшее оружие блокируется. Ошибка — только пистолет.'}
+              {stage === 'question' && `Каждые ${Math.round((T / 6) * 10) / 10} с лучшее оружие блокируется. Ошибка — только пистолет.`}
               {stage === 'result' && (correct ? `Доступно: ${avail.length} из 7` : 'Остался только пистолет')}
               {stage === 'pick' && <span className="text-[var(--accent)]">Автовыбор через {Math.ceil(pickLeft)} с</span>}
             </div>

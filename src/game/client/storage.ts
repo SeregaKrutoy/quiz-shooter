@@ -31,7 +31,7 @@ export interface LocalScore {
 
 // ---------- Раскладка сенсорных кнопок ----------
 
-export type TouchBtnId = 'fire' | 'jump' | 'ads' | 'reload' | 'swap' | 'pause' | 'board';
+export type TouchBtnId = 'fire' | 'jump' | 'ads' | 'reload' | 'swap' | 'pause' | 'board' | 'chat';
 
 export interface TouchBtnPos {
   /** доля ширины экрана от левого края (0..1) — центр кнопки */
@@ -56,9 +56,10 @@ export const TOUCH_BTN_INFO: Record<TouchBtnId, { title: string; base: number }>
   swap: { title: 'Смена оружия', base: 48 },
   pause: { title: 'Пауза', base: 44 },
   board: { title: 'Счёт', base: 44 },
+  chat: { title: 'Чат', base: 44 },
 };
 
-export const TOUCH_BTNS: TouchBtnId[] = ['fire', 'jump', 'ads', 'reload', 'swap', 'pause', 'board'];
+export const TOUCH_BTNS: TouchBtnId[] = ['fire', 'jump', 'ads', 'reload', 'swap', 'pause', 'board', 'chat'];
 
 export function defaultTouchLayout(): TouchLayout {
   return {
@@ -74,6 +75,7 @@ export function defaultTouchLayout(): TouchLayout {
       swap: { x: 0.7, y: 0.6 },
       pause: { x: 0.055, y: 0.09 },
       board: { x: 0.125, y: 0.09 },
+      chat: { x: 0.195, y: 0.09 },
     },
   };
 }

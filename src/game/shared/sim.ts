@@ -1,9 +1,9 @@
 // Симуляция комнаты: матч, боты, урон, очки. Работает и на сервере (сеть), и в браузере (одиночная игра).
 import {
-  availableWeapons, answerPoints, BotKind, BotNet, BOTS, ClientAction, ClientUpdate, DIFF_INFO, EXAM_TIME, Look,
-  MatchNet, MatchSettings, MatchState, MAX_HP, MAX_PLAYERS, MODE_INFO, MV_GROUND, MV_MOVE, MV_SPRINT, MV_FIRE,
-  PlayerNet, RoomSummary, sanitizeSettings, SHIELD_MS, ShotWeapon, SimEvent, SimEventBody, Snapshot, Vec3T,
-  WeaponId, WEAPONS,
+  availableWeapons, answerPoints, BOMB_MS, BotKind, BotNet, BOTS, CHAT_MAX, ClientAction, ClientUpdate, DIFF_INFO,
+  examTime, ITEM_INFO, ItemKind, Look, MatchNet, MatchSettings, MatchState, MAX_HP, MAX_PLAYERS, MODE_INFO, MV_GROUND,
+  MV_MOVE, MV_SPRINT, MV_FIRE, normDiff, PlayerNet, RoomSummary, sanitizeSettings, SHIELD_ITEM_MS, SHIELD_MS,
+  ShotWeapon, SimEvent, SimEventBody, Snapshot, SPEED_MS, Vec3T, WeaponId, WEAPONS,
 } from './types';
 import { buildMap, cellOf, collideCircle, flowField, losClear, MapData, nextStep, rayBoxes } from './maps';
 
@@ -35,6 +35,9 @@ export interface SimPlayer {
   lastSeen: number;
   killTimes: number[];
   lockPosUntil: number;
+  speedUntil: number;
+  bombUntil: number;
+  lastChat: number;
 }
 
 interface SimBot {
@@ -71,8 +74,9 @@ interface SimBot {
   uz: number;
 }
 
-interface SimPack {
+interface SimItem {
   id: number;
+  k: ItemKind;
   x: number;
   z: number;
   on: boolean;
@@ -105,8 +109,9 @@ export class RoomSim {
   hostId = '';
   players = new Map<string, SimPlayer>();
   bots: SimBot[] = [];
-  packs: SimPack[] = [];
+  items: SimItem[] = [];
   events: SimEvent[] = [];
+  packsVer = 1;
   seq = 0;
   lastStep = 0;
   acc = 0;
@@ -155,6 +160,7 @@ export class RoomSim {
     const p: SimPlayer = {
       id, secret, name: nm, look, x: 0, y: 0, z: 0, ry: 0, rx: 0, mv: 0, w: 'rifle', hp: MAX_HP, alive: false, life: 0,
       shieldUntil: 0, score: 0, kills: 0, bk: 0, deaths: 0, ok: 0, qa: 0, streak: 0, lastSeen: now, killTimes: [], lockPosUntil: 0,
+      speedUntil: 0, bombUntil: 0, lastChat: 0,
     };
     this.players.set(id, p);
     if (!this.hostId || !this.players.has(this.hostId)) this.hostId = id;
@@ -201,7 +207,14 @@ export class RoomSim {
     p.hp = MAX_HP;
     p.life++;
     p.shieldUntil = now + SHIELD_MS;
+    p.speedUntil = 0;
+    p.bombUntil = 0;
     this.emit({ t: 'spawn', id: p.id, x, y: 0, z });
+  }
+
+  /** Неуязвим: щит появления, щит-предмет или несёт бомбу. */
+  isInvuln(p: SimPlayer, now: number): boolean {
+    return now < p.shieldUntil || now < p.bombUntil;
   }
 
   // ---------- Жизненный цикл матча ----------
@@ -209,6 +222,7 @@ export class RoomSim {
   applySettings(s: unknown) {
     if (this.state !== 'lobby' && this.state !== 'over') return;
     this.settings = sanitizeSettings(s);
+    this.packsVer++;
     this.map = buildMap(this.settings.map);
     this.fields.clear();
     this.bots = [];
@@ -225,7 +239,7 @@ export class RoomSim {
     this.bots = [];
     this.fields.clear();
     this.spawnCd = 0;
-    this.packs = this.map.packs.map((p, i) => ({ id: i, x: p[0], z: p[1], on: true, t: 0 }));
+    this.items = this.map.items.filter((it) => this.settings.itemToggles[it.k]).map((it, i) => ({ id: i, k: it.k, x: it.x, z: it.z, on: true, t: 0 }));
     const sp = [...this.map.spawns].sort(() => Math.random() - 0.5);
     let i = 0;
     for (const p of this.players.values()) {
@@ -283,8 +297,23 @@ export class RoomSim {
         if (p.alive && this.state === 'playing') this.explode(p, num(a.x), num(a.y), num(a.z), now);
       } else if (a.a === 'respawn') {
         this.handleRespawn(p, a, now);
+      } else if (a.a === 'chat') {
+        this.handleChat(p, a.text, now);
       }
     }
+  }
+
+  private handleChat(p: SimPlayer, raw: unknown, now: number) {
+    if (typeof raw !== 'string') return;
+    if (now - p.lastChat < 600) return;
+    const text = Array.from(raw)
+      .filter((c) => c.charCodeAt(0) >= 32 && c !== '<' && c !== '>')
+      .join('')
+      .trim()
+      .slice(0, CHAT_MAX);
+    if (!text) return;
+    p.lastChat = now;
+    this.emit({ t: 'chat', by: p.id, name: p.name, text, color: p.look.body });
   }
 
   private handleHit(p: SimPlayer, a: Extract<ClientAction, { a: 'hit' }>, now: number) {
@@ -303,15 +332,14 @@ export class RoomSim {
     } else {
       if (!mode.pvp) return;
       const t = this.players.get(a.target);
-      if (!t || !t.alive || t.id === p.id || now < t.shieldUntil) return;
+      if (!t || !t.alive || t.id === p.id || this.isInvuln(t, now)) return;
       this.damagePlayer(t, dmg, p.id, a.w, head, now, false, p.x, p.z);
     }
   }
 
-  private explode(p: SimPlayer, x: number, y: number, z: number, now: number) {
-    const r = WEAPONS.rpg.splash;
-    const D = WEAPONS.rpg.dmg;
-    this.emit({ t: 'boom', by: p.id, x, y, z, r });
+  private explode(p: SimPlayer, x: number, y: number, z: number, now: number, r = WEAPONS.rpg.splash, D = WEAPONS.rpg.dmg, bomb = false) {
+    if (bomb) this.emit({ t: 'boom', by: p.id, x: r2(x), y: r2(y), z: r2(z), r, k: 'bomb' });
+    else this.emit({ t: 'boom', by: p.id, x, y, z, r });
     const mode = MODE_INFO[this.settings.mode];
     if (mode.bots) {
       for (const b of this.bots) {
@@ -326,7 +354,7 @@ export class RoomSim {
     }
     if (mode.pvp) {
       for (const t of this.players.values()) {
-        if (!t.alive || t.id === p.id || now < t.shieldUntil) continue;
+        if (!t.alive || t.id === p.id || this.isInvuln(t, now)) continue;
         const d = Math.hypot(t.x - x, t.y + 0.9 - y, t.z - z);
         if (d > r + 0.4) continue;
         if (!losClear(this.map, x, y + 0.1, z, t.x, t.y + 0.9, t.z)) continue;
@@ -339,11 +367,13 @@ export class RoomSim {
   private handleRespawn(p: SimPlayer, a: Extract<ClientAction, { a: 'respawn' }>, now: number) {
     if (p.alive || !(this.state === 'playing' || this.state === 'countdown')) return;
     const correct = !!a.correct;
-    const time = clamp(num(a.time, EXAM_TIME), 0, EXAM_TIME);
-    const allowed = availableWeapons(correct, time);
+    const d = normDiff(a.d ?? 2);
+    const T = examTime(d);
+    const time = clamp(num(a.time, T), 0, T);
+    const allowed = availableWeapons(correct, time, T);
     const w: WeaponId = typeof a.w === 'string' && allowed.includes(a.w) ? a.w : 'pistol';
     p.qa++;
-    const pts = answerPoints(correct, time);
+    const pts = answerPoints(correct, time, T, d);
     if (correct) { p.ok++; p.score += pts; }
     this.emit({ t: 'answer', by: p.id, name: p.name, ok: correct, pts });
     p.w = w;
@@ -380,7 +410,7 @@ export class RoomSim {
   }
 
   private damagePlayer(t: SimPlayer, dmg: number, byId: string, w: ShotWeapon, head: boolean, now: number, splash: boolean, ax: number, az: number) {
-    if (!t.alive || now < t.shieldUntil) return;
+    if (!t.alive || this.isInvuln(t, now)) return;
     t.hp -= dmg;
     this.emit({ t: 'hit', by: byId, target: t.id, dmg: Math.round(dmg), head, x: r2(t.x), y: r2(t.y + 1.2), z: r2(t.z), sp: splash ? 1 : 0, ax: r2(ax), az: r2(az) });
     if (t.hp <= 0) this.killPlayer(t, byId, w, head, now);
@@ -391,8 +421,8 @@ export class RoomSim {
     t.hp = 0;
     t.deaths++;
     t.streak = 0;
-    const killer = this.players.get(byId);
-    let byName = 'Неизвестный';
+    const killer = byId === t.id ? undefined : this.players.get(byId);
+    let byName = byId === 'bomb' || byId === t.id ? 'Бомба' : 'Неизвестный';
     let pts = 0;
     let streak = 0;
     if (killer) {
@@ -449,21 +479,34 @@ export class RoomSim {
 
   private step(dt: number, now: number) {
     if (this.state !== 'playing' && this.state !== 'countdown') return;
-    for (const pk of this.packs) {
-      if (!pk.on) {
-        pk.t -= dt;
-        if (pk.t <= 0) pk.on = true;
+    for (const it of this.items) {
+      if (!it.on) {
+        it.t -= dt;
+        if (it.t <= 0) it.on = true;
         continue;
       }
       for (const p of this.players.values()) {
-        if (!p.alive || p.hp >= MAX_HP) continue;
-        if (Math.hypot(p.x - pk.x, p.z - pk.z) < 1.3 && p.y < 1.6) {
-          p.hp = Math.min(MAX_HP, p.hp + 50);
-          pk.on = false;
-          pk.t = 15;
-          this.emit({ t: 'pickup', id: pk.id, by: p.id });
+        if (!p.alive) continue;
+        if (it.k === 'health' && p.hp >= MAX_HP) continue;
+        if (it.k === 'bomb' && now < p.bombUntil) continue;
+        if (Math.hypot(p.x - it.x, p.z - it.z) < 1.3 && p.y < 1.6) {
+          if (it.k === 'health') p.hp = Math.min(MAX_HP, p.hp + 50);
+          else if (it.k === 'shield') p.shieldUntil = Math.max(p.shieldUntil, now + SHIELD_ITEM_MS);
+          else if (it.k === 'speed') p.speedUntil = Math.max(p.speedUntil, now + SPEED_MS);
+          else if (it.k === 'bomb') p.bombUntil = now + BOMB_MS;
+          it.on = false;
+          it.t = ITEM_INFO[it.k].respawn;
+          this.emit({ t: 'pickup', id: it.id, by: p.id, k: it.k });
           break;
         }
+      }
+    }
+    // бомбы: взрыв по таймеру — несущий погибает, всё вокруг получает урон в его пользу
+    for (const p of this.players.values()) {
+      if (p.alive && p.bombUntil && now >= p.bombUntil) {
+        p.bombUntil = 0;
+        this.explode(p, p.x, p.y + 0.9, p.z, now, 6, 150, true);
+        this.killPlayer(p, 'bomb', 'bomb', false, now);
       }
     }
     if (this.state !== 'playing') return;
@@ -562,7 +605,7 @@ export class RoomSim {
       for (const p of this.players.values()) {
         if (!p.alive) continue;
         let d = Math.hypot(p.x - b.x, p.z - b.z);
-        if (now < p.shieldUntil) d += 25;
+        if (this.isInvuln(p, now)) d += 25;
         if (p.id === b.target) d -= 4;
         if (d < bd) { bd = d; best = p; }
       }
@@ -591,7 +634,7 @@ export class RoomSim {
       if (b.k === 'runner') {
         if (b.los && dist < 14) { mx = ux; mz = uz; }
         else { const s = this.pathDir(b, tgt.x, tgt.z, tgt.id, now); if (s) { mx = s[0]; mz = s[1]; } else { mx = ux; mz = uz; } }
-        if (dist < def.range && Math.abs(tgt.y - b.y) < 1.4 && b.fireCd <= 0 && now >= tgt.shieldUntil) {
+        if (dist < def.range && Math.abs(tgt.y - b.y) < 1.4 && b.fireCd <= 0 && !this.isInvuln(tgt, now)) {
           b.fireCd = def.rate;
           b.firingT = 0.3;
           this.emit({ t: 'melee', by: b.id, target: tgt.id });
@@ -616,7 +659,7 @@ export class RoomSim {
           const s = this.pathDir(b, tgt.x, tgt.z, tgt.id, now);
           if (s) { mx = s[0]; mz = s[1]; } else { mx = ux; mz = uz; }
         }
-        if (b.los && dist < def.range && now >= tgt.shieldUntil && tgt.alive) {
+        if (b.los && dist < def.range && !this.isInvuln(tgt, now) && tgt.alive) {
           b.react -= dt;
           if (b.react <= 0 && b.fireCd <= 0) {
             if (b.k === 'heavy') {
@@ -688,6 +731,7 @@ export class RoomSim {
     if (moving) p *= 0.8;
     if (sprint) p *= 0.8;
     if (air) p *= 0.75;
+    if (now < tgt.speedUntil) p *= 0.75;
     if ((tgt.mv & MV_FIRE) !== 0) p *= 1.05;
     const hit = Math.random() < p;
     const s = def.scale;
@@ -714,9 +758,12 @@ export class RoomSim {
   // ---------- Снимок ----------
 
   matchNet(): MatchNet {
+    // вопросы своих экзаменов (в т.ч. картинки) не гоняем в каждом снимке — клиент берёт их отдельно по packsVer
+    const settings: MatchSettings = { ...this.settings, packs: [] };
     return {
-      state: this.state, settings: this.settings, startsAt: this.startsAt, endsAt: this.endsAt, hostId: this.hostId,
+      state: this.state, settings, startsAt: this.startsAt, endsAt: this.endsAt, hostId: this.hostId,
       wave: this.wave, teamBotKills: this.teamBotKills, roomName: this.name, code: this.code, matchId: this.matchId,
+      packsVer: this.packsVer, packsInfo: this.settings.packs.map((p) => ({ title: p.title, count: p.questions.length })),
     };
   }
 
@@ -728,6 +775,9 @@ export class RoomSim {
         hp: Math.max(0, Math.ceil(p.hp)), st: p.alive ? 'alive' : 'dead', life: p.life, w: p.w,
         sh: p.alive && now < p.shieldUntil ? 1 : 0, score: p.score, kills: p.kills, bk: p.bk, deaths: p.deaths,
         ok: p.ok, qa: p.qa, streak: p.streak,
+        sp: p.alive && now < p.speedUntil ? Math.round((p.speedUntil - now) / 100) / 10 : 0,
+        bm: p.alive && now < p.bombUntil ? Math.round((p.bombUntil - now) / 100) / 10 : 0,
+        inv: p.alive && this.isInvuln(p, now) ? 1 : 0,
       });
     }
     const bots: BotNet[] = this.bots.map((b) => ({
@@ -742,7 +792,7 @@ export class RoomSim {
     }
     return {
       now, seq: this.seq, you: forId, match: this.matchNet(), players, bots,
-      packs: this.packs.map((p) => ({ id: p.id, x: p.x, z: p.z, on: p.on })), events,
+      items: this.items.map((it) => ({ id: it.id, k: it.k, x: it.x, z: it.z, on: it.on })), events,
     };
   }
 }

@@ -1,18 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import type { FeedItem, HudData } from '@/game/client/engine';
+import { useEffect, useRef, useState } from 'react';
+import type { ChatMsg, FeedItem, HudData } from '@/game/client/engine';
 import type { Prefs } from '@/game/client/storage';
 import { sfx } from '@/game/client/audio';
 import {
-  BOTS, fmtTime, LAYOUT_INFO, MatchNet, MODE_INFO, PlayerNet, SIZE_INFO, THEME_INFO, TOPIC_INFO, WEAPONS, DIFF_INFO,
+  BOTS, fmtTime, ITEM_INFO, ITEM_KINDS, LAYOUT_INFO, MatchNet, MODE_INFO, PlayerNet, QUICK_CHAT, SIZE_INFO, THEME_INFO, TICKET_DIFF_INFO, TOPIC_INFO, WEAPONS, DIFF_INFO,
 } from '@/game/shared/types';
 import { Stat } from './ui';
 
 export interface Announce { id: number; text: string; kind: string }
 export interface Popup { id: number; text: string; color: string }
 
-const WNAME = (w: string) => (w === 'bot' ? 'кулак' : WEAPONS[w as keyof typeof WEAPONS]?.name ?? w);
+const WNAME = (w: string) => (w === 'bot' ? 'кулак' : w === 'bomb' ? 'бомба' : WEAPONS[w as keyof typeof WEAPONS]?.name ?? w);
 
 export function Hud({ hud, feed, announces, popups, touch, showTips }: { hud: HudData | null; feed: FeedItem[]; announces: Announce[]; popups: Popup[]; touch: boolean; showTips: boolean }) {
   if (!hud) return null;
@@ -77,6 +77,20 @@ export function Hud({ hud, feed, announces, popups, touch, showTips }: { hud: Hu
           </div>
         ))}
       </div>
+
+      {(hud.bomb > 0 || hud.speed > 0) && (
+        <div className="absolute top-[63%] left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
+          {hud.bomb > 0 && (
+            <div className="pulse-soft rounded-2xl border-2 border-[var(--danger)] bg-black/70 px-4 py-1.5 text-center shadow-[0_0_30px_rgba(255,77,109,0.6)]">
+              <div className="title-font text-2xl text-[var(--danger)] sm:text-3xl">💣 {hud.bomb.toFixed(1)}</div>
+              <div className="text-[10px] font-black tracking-widest text-white/80 uppercase">Ты неуязвим — беги к врагам!</div>
+            </div>
+          )}
+          {hud.speed > 0 && (
+            <div className="rounded-full border border-[var(--accent)]/60 bg-black/60 px-3 py-1 text-sm font-black text-[var(--accent)]">⚡ Скорость {hud.speed.toFixed(1)} с</div>
+          )}
+        </div>
+      )}
 
       {hud.state === 'countdown' && hud.countdown > 0 && (
         <div className="absolute inset-0 flex items-center justify-center">
@@ -301,8 +315,9 @@ export function GameOverScreen({ match, players, meId, rank, online, isHost, onR
   );
 }
 
-export function LobbyPanel({ match, players, meId, onStart, onSettings, onExit, error }: {
+export function LobbyPanel({ match, players, meId, onStart, onSettings, onExit, error, chat, onChat }: {
   match: MatchNet; players: PlayerNet[]; meId: string; onStart: () => void; onSettings: () => void; onExit: () => void; error: string | null;
+  chat: ChatMsg[]; onChat: (text: string) => void;
 }) {
   const [addr, setAddr] = useState<string[]>([]);
   const [origin, setOrigin] = useState('');
@@ -348,13 +363,17 @@ export function LobbyPanel({ match, players, meId, onStart, onSettings, onExit, 
               </div>
             ))}
           </div>
+          <div className="mt-4 label">Чат комнаты</div>
+          <LobbyChat chat={chat} onChat={onChat} />
         </div>
         <div className="panel slide-up flex flex-col p-5" style={{ animationDelay: '0.08s' }}>
           <div className="label">Настройки матча</div>
           <div className="mt-2 space-y-1.5 text-sm">
             <Row k="Режим" v={`${MODE_INFO[s.mode].icon} ${MODE_INFO[s.mode].title}`} />
             <Row k="Карта" v={`${LAYOUT_INFO[s.map.layout].title} · ${SIZE_INFO[s.map.size].title} · ${THEME_INFO[s.map.theme].icon} ${THEME_INFO[s.map.theme].title}`} />
-            <Row k="Темы билетов" v={[...s.topics.map((t) => TOPIC_INFO[t].short), ...(s.packs ?? []).map((p) => `📝 ${p.title} (${p.questions.length})`)].join(', ') || '—'} />
+            <Row k="Темы билетов" v={[...s.topics.map((t) => TOPIC_INFO[t].short), ...(match.packsInfo ?? []).map((p) => `📝 ${p.title} (${p.count})`)].join(', ') || '—'} />
+            <Row k="Билеты" v={TICKET_DIFF_INFO[s.ticketDiff ?? 'any'].title} />
+            <Row k="Предметы" v={ITEM_KINDS.filter((k) => s.itemToggles?.[k] !== false).map((k) => `${ITEM_INFO[k].icon} ${ITEM_INFO[k].title}`).join(', ') || 'Отключены'} />
             {MODE_INFO[s.mode].bots && <Row k="Боты" v={`${s.bots} · ${DIFF_INFO[s.difficulty].title}`} />}
             <Row k="Длительность" v={fmtTime(s.duration)} />
           </div>
@@ -382,6 +401,120 @@ function Row({ k, v }: { k: string; v: string }) {
     <div className="flex justify-between gap-3 border-b border-white/5 pb-1">
       <span className="text-white/55">{k}</span>
       <span className="text-right font-bold">{v}</span>
+    </div>
+  );
+}
+
+
+function LobbyChat({ chat, onChat }: { chat: ChatMsg[]; onChat: (t: string) => void }) {
+  const [text, setText] = useState('');
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [chat.length]);
+  const send = () => {
+    const t = text.trim();
+    if (!t) return;
+    onChat(t);
+    setText('');
+    sfx.click();
+  };
+  return (
+    <div className="mt-2 rounded-xl border border-[var(--line)] bg-black/25 p-2">
+      <div ref={listRef} className="max-h-36 space-y-1 overflow-y-auto pr-1 text-sm">
+        {chat.length === 0 && <div className="py-3 text-center text-xs text-white/40">Пока тихо. Напишите что-нибудь!</div>}
+        {chat.slice(-40).map((m) => (
+          <div key={m.id} className="leading-snug">
+            <span className="font-black" style={{ color: m.color }}>{m.name}:</span> <span className="text-white/90">{m.text}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-2">
+        <input
+          className="min-w-0 flex-1 rounded-lg border-2 border-[var(--line)] bg-black/40 px-3 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
+          placeholder="Сообщение…"
+          maxLength={120}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') send();
+          }}
+        />
+        <button className="btn btn-cyan !px-3 !py-1.5 text-xs" onClick={send}>➤</button>
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        {QUICK_CHAT.slice(0, 5).map((q) => (
+          <button key={q} className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-bold text-white/80 hover:bg-white/20" onClick={() => { onChat(q); sfx.click(); }}>{q}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Игровой чат: сообщения тают, ввод открывается по Enter/T или кнопке 💬. */
+export function GameChat({ chat, open, touch, onOpen, onClose, onSend }: {
+  chat: ChatMsg[]; open: boolean; touch: boolean; onOpen: () => void; onClose: () => void; onSend: (t: string) => void;
+}) {
+  const [text, setText] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (open) {
+      setText('');
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    }
+  }, [open]);
+  // перерисовка для затухания
+  useEffect(() => {
+    const id = window.setInterval(() => force((v) => v + 1), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  const now = Date.now();
+  const visible = open ? chat.slice(-8) : chat.filter((m) => now - m.t < 11000).slice(-5);
+  const send = () => {
+    const t = text.trim();
+    if (t) onSend(t);
+    setText('');
+    onClose();
+  };
+  return (
+    <div className={`absolute z-30 flex w-[min(78vw,360px)] flex-col gap-1 ${touch ? 'top-[11rem] left-3' : 'bottom-28 left-5'} ${open ? '' : 'pointer-events-none'}`}>
+      <div className="flex flex-col gap-0.5">
+        {visible.map((m) => (
+          <div key={m.id} className="feed-in max-w-full rounded-lg bg-black/55 px-2 py-1 text-[12px] leading-snug break-words sm:text-[13px]" style={{ opacity: open ? 1 : Math.max(0.25, 1 - (now - m.t - 8000) / 3000) }}>
+            <span className="font-black" style={{ color: m.color }}>{m.name}:</span> <span className="text-white">{m.text}</span>
+          </div>
+        ))}
+      </div>
+      {open ? (
+        <div className="pop-in rounded-xl border border-[var(--accent)]/60 bg-black/80 p-2">
+          <div className="flex gap-1.5">
+            <input
+              ref={inputRef}
+              className="min-w-0 flex-1 rounded-lg border border-white/20 bg-black/50 px-2 py-1.5 text-sm text-white outline-none"
+              placeholder="Сообщение… (Enter — отправить, Esc — закрыть)"
+              maxLength={120}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === 'Enter') send();
+                else if (e.key === 'Escape') onClose();
+              }}
+            />
+            <button className="btn btn-cyan !px-3 !py-1 text-xs" onClick={send}>➤</button>
+            <button className="btn btn-ghost !px-2 !py-1 text-xs" onClick={onClose}>✕</button>
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {QUICK_CHAT.map((q) => (
+              <button key={q} className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] font-bold text-white/80 hover:bg-white/25" onClick={() => { onSend(q); onClose(); }}>{q}</button>
+            ))}
+          </div>
+        </div>
+      ) : (
+        !touch && <button className="pointer-events-auto w-fit rounded-md bg-black/40 px-2 py-0.5 text-[10px] font-bold text-white/45 hover:text-white" onClick={onOpen}>💬 Enter — чат</button>
+      )}
     </div>
   );
 }

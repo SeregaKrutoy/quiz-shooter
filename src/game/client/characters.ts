@@ -62,6 +62,7 @@ export class CharacterModel {
   private meleeT = 0;
   private landT = 0;
   private shield: THREE.Mesh | null = null;
+  private bombMode = false;
   private muzzle = new THREE.Vector3(0, 0, -0.55);
   private shadows: boolean;
   private t = Math.random() * 10;
@@ -313,7 +314,7 @@ export class CharacterModel {
     this.landT = 0.2;
   }
 
-  setShield(on: boolean) {
+  setShield(on: boolean, bomb = false) {
     if (on && !this.shield) {
       const m = new THREE.MeshBasicMaterial({ color: '#5ee7ff', transparent: true, opacity: 0.22, depthWrite: false, blending: THREE.AdditiveBlending });
       this.extraMats.push(m);
@@ -322,7 +323,15 @@ export class CharacterModel {
       this.shield.position.y = 0.95;
       this.root.add(this.shield);
     }
-    if (this.shield) this.shield.visible = on;
+    if (this.shield) {
+      this.shield.visible = on;
+      if (on) {
+        const mat = this.shield.material as THREE.MeshBasicMaterial;
+        const want = bomb ? 0xff3b3b : 0x5ee7ff;
+        if (mat.color.getHex() !== want) mat.color.setHex(want);
+        this.bombMode = bomb;
+      }
+    }
   }
 
   animate(dt: number, s: AnimState) {
@@ -385,7 +394,8 @@ export class CharacterModel {
       this.root.scale.set(this.scale * k, this.scale * (0.6 + 0.4 * k) * k, this.scale * k);
     }
     if (this.shield && this.shield.visible) {
-      (this.shield.material as THREE.MeshBasicMaterial).opacity = 0.16 + Math.sin(this.t * 10) * 0.08;
+      const f = this.bombMode ? 16 : 10;
+      (this.shield.material as THREE.MeshBasicMaterial).opacity = (this.bombMode ? 0.26 : 0.16) + Math.sin(this.t * f) * 0.1;
     }
   }
 

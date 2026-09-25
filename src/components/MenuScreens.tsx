@@ -8,7 +8,7 @@ import { sfx } from '@/game/client/audio';
 import {
   ACCENT_COLORS, BODY_COLORS, clearScores, LocalScore, loadScores, Prefs, Profile, randomLook, randomName, SKIN_COLORS,
 } from '@/game/client/storage';
-import { BOTS, FaceId, FACES, HatId, HATS, LAYOUT_INFO, MODE_INFO, sanitizeName, WEAPON_ORDER, WEAPONS, GameMode, MapLayout } from '@/game/shared/types';
+import { BOTS, EXAM_DIFF_INFO, FaceId, FACES, HatId, HATS, ITEM_INFO, ItemKind, LAYOUT_INFO, MODE_INFO, sanitizeName, WEAPON_ORDER, WEAPONS, GameMode, MapLayout } from '@/game/shared/types';
 
 const HAT_NAMES: Record<HatId, string> = { none: 'Без шапки', cap: 'Кепка', helmet: 'Каска', ushanka: 'Ушанка', crown: 'Корона', horns: 'Рога', mohawk: 'Ирокез', tophat: 'Цилиндр' };
 const FACE_NAMES: Record<FaceId, string> = { none: 'Обычное', visor: 'Визор', glasses: 'Очки', mask: 'Маска', mustache: 'Усы' };
@@ -217,10 +217,24 @@ export function HelpScreen({ onBack }: { onBack: () => void }) {
         <div className="panel p-5">
           <div className="label">Суть</div>
           <p className="mt-2 text-sm leading-relaxed text-white/80">
-            Сражайтесь с ботами и друзьями. После смерти выпадает случайный экзаменационный билет — на ответ <b>30 секунд</b>.
-            Каждые 5 секунд самое сильное оружие блокируется. Неверный ответ или истёкшее время — остаётся только пистолет.
-            Верный ответ приносит от 50 до 100 очков в зависимости от скорости.
+            Сражайтесь с ботами и друзьями. После смерти выпадает случайный экзаменационный билет. Время зависит от сложности билета:{' '}
+            {([1, 2, 3] as const).map((d, i) => (
+              <span key={d}>
+                <b style={{ color: EXAM_DIFF_INFO[d].color }}>{EXAM_DIFF_INFO[d].title.toLowerCase()} — {EXAM_DIFF_INFO[d].time} с</b>
+                {i < 2 ? ', ' : '. '}
+              </span>
+            ))}
+            За шестую часть времени блокируется одно оружие (сильнейшее). Неверный ответ или истёкшее время — остаётся только пистолет.
+            Верный ответ приносит 50–100 очков за скорость, сложные билеты — до ×1.5.
           </p>
+          <div className="mt-4 label">Предметы на карте</div>
+          <ul className="mt-2 space-y-1 text-sm text-white/80">
+            {(Object.keys(ITEM_INFO) as ItemKind[]).map((k) => (
+              <li key={k}>
+                <span className="font-black" style={{ color: ITEM_INFO[k].color }}>{ITEM_INFO[k].icon} {ITEM_INFO[k].title}</span> — {ITEM_INFO[k].desc}
+              </li>
+            ))}
+          </ul>
           <div className="mt-4 label">Очки</div>
           <ul className="mt-2 space-y-1 text-sm text-white/80">
             <li>• {BOTS.grunt.name} — {BOTS.grunt.pts}, {BOTS.runner.name} — {BOTS.runner.pts}, {BOTS.heavy.name} — {BOTS.heavy.pts}</li>
@@ -243,7 +257,9 @@ export function HelpScreen({ onBack }: { onBack: () => void }) {
           <div className="mt-4 label">Сенсорный экран</div>
           <p className="mt-2 text-sm text-white/80">Играйте в альбомном режиме. Левая половина — джойстик (дожмите вперёд для бега), правая — обзор. «ОГОНЬ» стреляет и одновременно наводит камеру. Кнопки можно перетаскивать и настраивать в меню «🎮 Управление». Есть лёгкая помощь в прицеливании.</p>
           <div className="mt-4 label">Свои экзамены</div>
-          <p className="mt-2 text-sm text-white/80">В меню «📝 Экзамены» создайте свои билеты и поделитесь ими: QR-код + короткий код для игроков на том же сервере, текстовый код для мессенджера или файл.</p>
+          <p className="mt-2 text-sm text-white/80">В меню «📝 Экзамены» создайте свои билеты (сколько угодно вопросов, с картинками и сложностью) и поделитесь ими: QR-код + короткий код для игроков на том же сервере, текстовый код для мессенджера или файл.</p>
+          <div className="mt-4 label">Чат</div>
+          <p className="mt-2 text-sm text-white/80">В сетевой игре: <b className="text-[var(--accent)]">Enter</b> или <b className="text-[var(--accent)]">T</b> открывает чат, на телефоне — кнопка 💬. Есть быстрые фразы. Чат работает и в лобби.</p>
         </div>
         <div className="panel p-5 md:col-span-2">
           <div className="label">Арсенал (от сильного к слабому)</div>

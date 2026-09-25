@@ -17,7 +17,7 @@ interface Props {
 }
 
 const LABELS: Record<TouchBtnId, string> = {
-  fire: 'ОГОНЬ', jump: 'ПРЫЖОК', ads: 'ПРИЦЕЛ', reload: '↻', swap: '⇄', pause: '❚❚', board: '☰',
+  fire: 'ОГОНЬ', jump: 'ПРЫЖОК', ads: 'ПРИЦЕЛ', reload: '↻', swap: '⇄', pause: '❚❚', board: '☰', chat: '💬',
 };
 
 function TouchEditor({ value, onChange }: { value: TouchLayout; onChange: (v: TouchLayout) => void }) {

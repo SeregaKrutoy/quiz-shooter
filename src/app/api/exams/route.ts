@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 const ALPHA = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
-type QArr = [unknown, unknown, unknown, unknown];
+type QArr = [unknown, unknown, unknown, unknown, unknown?, unknown?];
 
 async function readJson(req: Request): Promise<Record<string, unknown>> {
   try {
@@ -47,11 +47,11 @@ export async function POST(req: Request) {
   const pack = sanitizeExamPack({
     id: 'tmp',
     title: b.title,
-    questions: rawQ.map((r) => ({ q: r?.[0], options: r?.[1], answer: r?.[2], note: r?.[3] })),
+    questions: rawQ.map((r) => ({ q: r?.[0], options: r?.[1], answer: r?.[2], note: r?.[3], img: r?.[4], d: r?.[5] })),
   });
   if (!pack) return Response.json({ error: 'Нужно название и минимум 2 заполненных вопроса' }, { status: 400 });
   const author = typeof b.author === 'string' ? b.author.replace(/[<>\n]/g, '').trim().slice(0, 32) : '';
-  const payload = { q: pack.questions.map((q) => [q.q, q.options, q.answer, q.note]) };
+  const payload = { q: pack.questions.map((q) => [q.q, q.options, q.answer, q.note, q.img ?? '', q.d ?? 2]) };
   try {
     for (let i = 0; i < 12; i++) {
       const code = Array.from({ length: 6 }, () => ALPHA[Math.floor(Math.random() * ALPHA.length)]).join('');

@@ -1,7 +1,7 @@
 import { db } from '@/db';
 import { scores } from '@/db/schema';
 import { readJson } from '@/game/server/rooms';
-import { sanitizeName } from '@/game/shared/types';
+import { LAYOUTS, sanitizeName } from '@/game/shared/types';
 import { desc } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
@@ -23,7 +23,7 @@ const int = (v: unknown, max: number) => {
 export async function POST(req: Request) {
   const b = await readJson(req);
   const mode = ['pvp', 'coop', 'ffa'].includes(String(b.mode)) ? String(b.mode) : 'coop';
-  const layout = ['arena', 'city', 'warehouse', 'ruins'].includes(String(b.layout)) ? String(b.layout) : 'arena';
+  const layout = (LAYOUTS as string[]).includes(String(b.layout)) ? String(b.layout) : 'arena';
   const row = {
     name: sanitizeName(b.name),
     score: int(b.score, 200000),

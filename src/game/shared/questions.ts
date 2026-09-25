@@ -1,5 +1,5 @@
 // Экзаменационные билеты. В исходных данных правильный ответ всегда первый — при показе варианты перемешиваются.
-import { ExamPack, TopicId } from './types';
+import { ExamDiff, ExamPack, examTime, TicketDiff, TICKET_DIFF_INFO, TopicId } from './types';
 
 export interface Question {
   id: number;
@@ -9,6 +9,11 @@ export interface Question {
   note: string;
   flag?: string;
   pack?: string;
+  img?: string;
+  /** сложность: 1 — 20 с, 2 — 30 с, 3 — 40 с */
+  d: ExamDiff;
+  /** секунд на ответ */
+  time: number;
 }
 
 export interface PreparedQuestion extends Question {
@@ -97,15 +102,23 @@ const LAW: Raw[] = [
   ['Сколько по общему правилу действует исключительное право на произведение?', ['Жизнь автора и 70 лет после смерти', '50 лет с момента создания', '20 лет с публикации', 'Только при жизни автора'], 'Ст. 1281 ГК РФ.'],
 ];
 
+// Сложность встроенных билетов (1 — лёгкий, 2 — средний, 3 — сложный), по порядку вопросов выше
+const FLAGS_D: ExamDiff[] = [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 1, 1, 1, 1, 2, 1, 2, 3, 3, 2];
+const HISTORY_D: ExamDiff[] = [1, 2, 1, 2, 1, 1, 2, 2, 1, 3, 3, 2, 2, 2, 1, 1, 3, 3, 2, 3];
+const LAW_D: ExamDiff[] = [1, 2, 2, 3, 2, 3, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 3, 3, 3, 2, 3, 3, 2, 2, 2, 2, 3, 3];
+
 function build(): Question[] {
   const out: Question[] = [];
   let id = 1;
-  const push = (topic: TopicId, list: Raw[]) => {
-    for (const [q, options, note, flag] of list) out.push({ id: id++, topic, q, options, note, flag });
+  const push = (topic: TopicId, list: Raw[], diffs: ExamDiff[]) => {
+    list.forEach(([q, options, note, flag], i) => {
+      const d = diffs[i] ?? 2;
+      out.push({ id: id++, topic, q, options, note, flag, d, time: examTime(d) });
+    });
   };
-  push('flags', FLAGS);
-  push('history', HISTORY);
-  push('law', LAW);
+  push('flags', FLAGS, FLAGS_D);
+  push('history', HISTORY, HISTORY_D);
+  push('law', LAW, LAW_D);
   return out;
 }
 
@@ -127,24 +140,33 @@ export class QuestionDeck {
   private pool: Question[] = [];
   readonly key: string;
   private readonly custom: Question[];
-  constructor(private topics: TopicId[], packs: ExamPack[] = []) {
+  constructor(private topics: TopicId[], packs: ExamPack[] = [], private ticketDiff: TicketDiff = 'any') {
     const custom: Question[] = [];
     let cid = 100000;
     for (const pack of packs) {
       for (const cq of pack.questions) {
         // правильный ответ — первым, как во встроенных данных
         const rest = [0, 1, 2, 3].filter((i) => i !== cq.answer).map((i) => cq.options[i]);
-        custom.push({ id: cid++, topic: 'custom', q: cq.q, options: [cq.options[cq.answer], rest[0], rest[1], rest[2]], note: cq.note, pack: pack.title });
+        const d: ExamDiff = cq.d ?? 2;
+        custom.push({
+          id: cid++, topic: 'custom', q: cq.q, options: [cq.options[cq.answer], rest[0], rest[1], rest[2]], note: cq.note,
+          pack: pack.title, img: cq.img, d, time: examTime(d),
+        });
       }
     }
     this.custom = custom;
     const sig = packs.map((q) => `${q.id}:${q.questions.length}`).sort().join('|');
-    this.key = `${[...topics].sort().join(',')}#${sig}`;
+    this.key = `${[...topics].sort().join(',')}#${sig}#${ticketDiff}`;
   }
   draw(): PreparedQuestion {
     if (!this.pool.length) {
       const src = QUESTIONS.filter((q) => this.topics.includes(q.topic));
-      const all = src.length ? [...src, ...this.custom] : this.custom.length ? [...this.custom] : QUESTIONS;
+      let all = src.length ? [...src, ...this.custom] : this.custom.length ? [...this.custom] : QUESTIONS;
+      const want = TICKET_DIFF_INFO[this.ticketDiff].d;
+      if (want) {
+        const filtered = all.filter((q) => q.d === want);
+        if (filtered.length >= 2) all = filtered;
+      }
       this.pool = shuffle(all);
     }
     const q = this.pool.pop() as Question;

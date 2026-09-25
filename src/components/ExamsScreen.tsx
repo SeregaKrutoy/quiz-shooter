@@ -6,11 +6,11 @@ import QrScanner from './QrScanner';
 import { Modal, ScreenShell, Section, Seg } from './ui';
 import { sfx } from '@/game/client/audio';
 import {
-  decodeExamCode, downloadTextFile, encodeExamCode, examFromFile, examShareUrl, examToFile, extractServerCode,
-  fetchExamByCode, fetchRecentExams, uploadExam,
+  compressImage, decodeExamCode, downloadTextFile, encodeExamCode, examFromFile, examHasImages, examShareUrl, examToFile,
+  extractServerCode, fetchExamByCode, fetchRecentExams, uploadExam,
 } from '@/game/client/exams';
 import { deleteCustomExam, loadCustomExams, loadProfile, newExamId, saveCustomExam, type CustomExam } from '@/game/client/storage';
-import { MAX_PACK_QUESTIONS, type CustomQuestion } from '@/game/shared/types';
+import { EXAM_DIFF_INFO, type CustomQuestion, type ExamDiff } from '@/game/shared/types';
 
 type Tab = 'list' | 'edit' | 'import';
 
@@ -21,7 +21,7 @@ interface Draft {
   questions: (CustomQuestion & { open: boolean })[];
 }
 
-const blankQ = (): CustomQuestion & { open: boolean } => ({ q: '', options: ['', '', '', ''], answer: 0, note: '', open: true });
+const blankQ = (): CustomQuestion & { open: boolean } => ({ q: '', options: ['', '', '', ''], answer: 0, note: '', d: 2, open: true });
 
 function toDraft(e?: CustomExam): Draft {
   if (!e) return { id: newExamId(), title: '', author: loadProfile().name, questions: [blankQ(), blankQ()] };
@@ -29,7 +29,7 @@ function toDraft(e?: CustomExam): Draft {
 }
 
 function validQ(q: CustomQuestion): boolean {
-  return !!q.q.trim() && q.options.every((o) => o.trim().length > 0);
+  return (!!q.q.trim() || !!q.img) && q.options.every((o) => o.trim().length > 0);
 }
 
 async function copyText(t: string): Promise<boolean> {
@@ -75,7 +75,18 @@ export default function ExamsScreen({ embedded = false, onBack }: { embedded?: b
       flash('Нужно минимум 2 заполненных вопроса (текст + 4 варианта)', false);
       return;
     }
-    saveCustomExam({ id: draft.id, title: title.slice(0, 60), questions: good.map((q) => ({ q: q.q.trim(), options: q.options.map((o) => o.trim()) as [string, string, string, string], answer: q.answer, note: q.note.trim() })), author: draft.author.slice(0, 32), updatedAt: Date.now(), origin: 'local' });
+    saveCustomExam({
+      id: draft.id,
+      title: title.slice(0, 60),
+      questions: good.map((q) => {
+        const out: CustomQuestion = { q: q.q.trim() || 'Что изображено на картинке?', options: q.options.map((o) => o.trim()) as [string, string, string, string], answer: q.answer, note: q.note.trim(), d: q.d ?? 2 };
+        if (q.img) out.img = q.img;
+        return out;
+      }),
+      author: draft.author.slice(0, 32),
+      updatedAt: Date.now(),
+      origin: 'local',
+    });
     sfx.correct();
     refresh();
     setTab('list');
@@ -156,7 +167,7 @@ function ExamList({ exams, onEdit, onShare, onDelete, onCreate }: {
           <div className="min-w-0 flex-1">
             <div className="truncate font-black">{e.title}</div>
             <div className="text-xs text-white/55">
-              {e.questions.length} вопр. · {e.origin === 'local' ? 'мой' : e.origin === 'server' ? `с сервера${e.code ? ` (${e.code})` : ''}` : e.origin === 'code' ? 'по коду' : 'из файла'}
+              {e.questions.length} вопр.{examHasImages(e) ? ' · 🖼' : ''} · {e.origin === 'local' ? 'мой' : e.origin === 'server' ? `с сервера${e.code ? ` (${e.code})` : ''}` : e.origin === 'code' ? 'по коду' : 'из файла'}
               {e.author ? ` · ${e.author}` : ''}
             </div>
           </div>
@@ -210,7 +221,49 @@ function ExamEditor({ draft, onChange, onSave, onCancel }: { draft: Draft; onCha
             </button>
             {q.open && (
               <div className="mt-3 space-y-2">
-                <textarea className="w-full rounded-xl border-2 border-[var(--line)] bg-black/30 px-3 py-2 font-bold outline-none focus:border-[var(--accent)]" rows={2} maxLength={300} placeholder="Текст вопроса" value={q.q} onChange={(e) => setQ(i, { q: e.target.value })} />
+                <textarea className="w-full rounded-xl border-2 border-[var(--line)] bg-black/30 px-3 py-2 font-bold outline-none focus:border-[var(--accent)]" rows={2} maxLength={300} placeholder={q.img ? 'Текст вопроса (необязательно, есть картинка)' : 'Текст вопроса'} value={q.q} onChange={(e) => setQ(i, { q: e.target.value })} />
+                <div className="flex flex-wrap items-center gap-2">
+                  {q.img ? (
+                    <div className="flex items-center gap-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={q.img} alt="" className="h-16 w-24 rounded-lg border border-white/20 object-cover" />
+                      <button className="text-xs font-bold text-[#ff8a9a]" onClick={() => setQ(i, { img: undefined })}>Убрать картинку</button>
+                    </div>
+                  ) : (
+                    <label className="btn btn-ghost cursor-pointer !px-3 !py-1.5 text-xs">
+                      🖼 Прикрепить картинку
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={async (e) => {
+                          const f = e.target.files?.[0];
+                          if (!f) return;
+                          try {
+                            const img = await compressImage(f);
+                            setQ(i, { img });
+                          } catch {
+                            // игнор
+                          }
+                        }}
+                      />
+                    </label>
+                  )}
+                  <div className="ml-auto flex items-center gap-1">
+                    <span className="text-[10px] font-bold tracking-widest text-white/50 uppercase">Сложность</span>
+                    {([1, 2, 3] as ExamDiff[]).map((d) => (
+                      <button
+                        key={d}
+                        onClick={() => setQ(i, { d })}
+                        className="rounded-lg px-2 py-1 text-[11px] font-black"
+                        style={{ background: (q.d ?? 2) === d ? EXAM_DIFF_INFO[d].color : 'rgba(255,255,255,0.08)', color: (q.d ?? 2) === d ? '#0b0e1a' : '#fff' }}
+                        title={`${EXAM_DIFF_INFO[d].time} секунд на ответ`}
+                      >
+                        {EXAM_DIFF_INFO[d].short} {EXAM_DIFF_INFO[d].time}с
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 {q.options.map((o, j) => (
                   <div key={j} className="flex items-center gap-2">
                     <button
@@ -241,14 +294,12 @@ function ExamEditor({ draft, onChange, onSave, onCancel }: { draft: Draft; onCha
             )}
           </div>
         ))}
-        {draft.questions.length < MAX_PACK_QUESTIONS && (
-          <button className="btn btn-ghost w-full" onClick={() => { sfx.click(); set({ questions: [...draft.questions, blankQ()] }); }}>＋ Добавить вопрос ({draft.questions.length}/{MAX_PACK_QUESTIONS})</button>
-        )}
+        <button className="btn btn-ghost w-full" onClick={() => { sfx.click(); set({ questions: [...draft.questions, blankQ()] }); }}>＋ Добавить вопрос ({draft.questions.length})</button>
       </div>
       <div className="panel h-fit p-4 lg:sticky lg:top-4">
         <div className="label">Готовность</div>
         <div className="mt-1 text-3xl font-black">{good}<span className="text-base text-white/50"> / {draft.questions.length}</span></div>
-        <div className="mt-1 text-xs text-white/55">Заполненных вопросов. Нужно минимум 2. Зелёной галочкой отметьте правильный вариант.</div>
+        <div className="mt-1 text-xs text-white/55">Заполненных вопросов. Нужно минимум 2, максимума нет. Зелёной галочкой отметьте правильный вариант. Сложность задаёт время: 20 / 30 / 40 секунд.</div>
         <button className="btn btn-primary mt-4 w-full" onClick={() => { sfx.click(); onSave(); }}>✓ Сохранить экзамен</button>
         <button className="btn btn-ghost mt-2 w-full" onClick={onCancel}>Отмена</button>
       </div>
@@ -313,7 +364,7 @@ function ShareModal({ exam, onClose }: { exam: CustomExam; onClose: () => void }
           <div className="flex flex-col gap-4">
             <div className="rounded-2xl border border-[var(--line)] bg-black/25 p-4">
               <div className="label">Способ 2 · Текстовый код</div>
-              <p className="mt-1 text-xs text-white/60">Работает везде, даже без сервера: отправьте код в мессенджер.</p>
+              <p className="mt-1 text-xs text-white/60">Работает везде, даже без сервера: отправьте код в мессенджер.{examHasImages(exam) ? ' Картинки в текстовый код не входят — для них используйте код сервера или файл.' : ''}</p>
               <textarea readOnly className="mt-2 h-20 w-full rounded-xl border border-[var(--line)] bg-black/40 p-2 font-mono text-[10px] break-all text-white/80" value={textCode} onFocus={(e) => e.target.select()} />
               <button className="btn btn-cyan mt-2 w-full !py-2 text-xs" onClick={() => copy(textCode, 'txt')}>{copied === 'txt' ? '✓ Скопировано' : 'Копировать код'}</button>
             </div>

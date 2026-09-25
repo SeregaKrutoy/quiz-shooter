@@ -12,6 +12,7 @@ const SHOT: Record<ShotWeapon, { f: number; d: number; v: number; thump: number 
   lmg: { f: 1500, d: 0.1, v: 0.6, thump: 95 },
   rpg: { f: 600, d: 0.45, v: 0.7, thump: 55 },
   bot: { f: 2000, d: 0.08, v: 0.38, thump: 160 },
+  bomb: { f: 600, d: 0.45, v: 0.7, thump: 55 },
 };
 
 class Sfx {
@@ -256,6 +257,19 @@ class Sfx {
     const t = c.currentTime;
     this.tone(c, t, 'square', final ? 1046 : 523, final ? 1046 : 523, final ? 0.5 : 0.15, 0.16);
     if (final) this.tone(c, t, 'sawtooth', 523, 523, 0.5, 0.08);
+  }
+
+  beep(fast: boolean) {
+    const c = this.ok('beep', fast ? 120 : 250);
+    if (!c) return;
+    this.tone(c, c.currentTime, 'square', fast ? 1500 : 1100, fast ? 1500 : 1100, 0.06, 0.16);
+  }
+
+  powerup() {
+    const c = this.ok('powerup', 150);
+    if (!c) return;
+    const t = c.currentTime;
+    [440, 660, 880, 1320].forEach((f, i) => this.tone(c, t + i * 0.04, 'square', f, f * 1.2, 0.12, 0.14));
   }
 
   melee() {

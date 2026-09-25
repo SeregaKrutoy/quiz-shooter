@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { buildMap } from '@/game/shared/maps';
 import {
   Density, DENSITY_INFO, DIFF_INFO, Difficulty, DURATIONS, fmtTime, GameMode, LAYOUT_INFO, MapLayout, MapSize, MapTheme, MatchSettings,
-  MAX_PACKS, MODE_INFO, SIZE_INFO, THEME_INFO, TOPIC_INFO, TopicId,
+  ITEM_INFO, ITEM_KINDS, ItemKind, MODE_INFO, SIZE_INFO, THEME_INFO, TicketDiff, TICKET_DIFF_INFO, TOPIC_INFO, TopicId,
 } from '@/game/shared/types';
 import { sfx } from '@/game/client/audio';
 import { loadCustomExams, type CustomExam } from '@/game/client/storage';
@@ -44,12 +44,17 @@ function MapPreview({ settings }: { settings: MatchSettings }) {
     for (const [x, z] of map.spawns) {
       g.beginPath(); g.arc(tx(x), tx(z), 3, 0, Math.PI * 2); g.fill();
     }
-    g.fillStyle = '#3ddc84';
-    for (const [x, z] of map.packs) {
-      g.fillRect(tx(x) - 5, tx(z) - 1.5, 10, 3);
-      g.fillRect(tx(x) - 1.5, tx(z) - 5, 3, 10);
+    for (const it of map.items) {
+      if (!settings.itemToggles[it.k]) continue;
+      g.fillStyle = ITEM_INFO[it.k as ItemKind].color;
+      if (it.k === 'health') {
+        g.fillRect(tx(it.x) - 5, tx(it.z) - 1.5, 10, 3);
+        g.fillRect(tx(it.x) - 1.5, tx(it.z) - 5, 3, 10);
+      } else {
+        g.beginPath(); g.arc(tx(it.x), tx(it.z), 3.5, 0, Math.PI * 2); g.fill();
+      }
     }
-  }, [settings.map]);
+  }, [settings.map, settings.itemToggles]);
   return <canvas ref={ref} width={320} height={320} className="aspect-square w-full max-w-[320px] rounded-2xl border border-[var(--line)] shadow-2xl" />;
 }
 
@@ -65,7 +70,14 @@ export default function MatchSetup({
   onCancel: () => void;
 }) {
   const [s, setS] = useState<MatchSettings>(() => {
-    const init = { ...initial, map: { ...initial.map }, topics: [...initial.topics.filter((t) => t !== 'custom')], packs: [...(initial.packs ?? [])] };
+    const init = {
+      ...initial,
+      map: { ...initial.map },
+      topics: [...initial.topics.filter((t) => t !== 'custom')],
+      packs: [...(initial.packs ?? [])],
+      ticketDiff: initial.ticketDiff ?? 'any',
+      itemToggles: initial.itemToggles ? { ...initial.itemToggles } : { health: true, shield: true, bomb: true, speed: true },
+    };
     if (variant === 'solo' && init.mode === 'pvp') init.mode = 'coop';
     return init;
   });
@@ -94,7 +106,6 @@ export default function MatchSetup({
         if (o.topics.length === 0 && packs.length === 0) return o;
         return { ...o, packs };
       }
-      if (o.packs.length >= MAX_PACKS) return o;
       return { ...o, packs: [...o.packs, { id: e.id, title: e.title, questions: e.questions }] };
     });
   };
@@ -175,6 +186,49 @@ export default function MatchSetup({
           <Seg value={s.map.theme} onChange={(v: MapTheme) => setMap({ theme: v })} options={(Object.keys(THEME_INFO) as MapTheme[]).map((k) => ({ value: k, label: `${THEME_INFO[k].icon} ${THEME_INFO[k].title}` }))} />
         </Section>
 
+        <Section
+          label={`Предметы на карте · ${ITEM_KINDS.filter((k) => s.itemToggles[k]).length}/${ITEM_KINDS.length}`}
+          right={
+            <div className="flex gap-2 text-[11px] font-bold">
+              <button className="text-[var(--ok)]" onClick={() => { sfx.click(); set({ itemToggles: { health: true, shield: true, bomb: true, speed: true } }); }}>Включить все</button>
+              <button className="text-[#ff8a9a]" onClick={() => { sfx.click(); set({ itemToggles: { health: false, shield: false, bomb: false, speed: false } }); }}>Выключить все</button>
+            </div>
+          }
+        >
+          <div className="grid gap-2 sm:grid-cols-2">
+            {ITEM_KINDS.map((k) => {
+              const info = ITEM_INFO[k];
+              const on = s.itemToggles[k];
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => {
+                    sfx.init();
+                    sfx.click();
+                    set({ itemToggles: { ...s.itemToggles, [k]: !on } });
+                  }}
+                  className={`flex items-center gap-3 rounded-2xl border-2 p-3 text-left transition-all ${on ? 'bg-white/5' : 'border-[var(--line)] bg-black/20 opacity-55 grayscale'}`}
+                  style={on ? { borderColor: info.color, boxShadow: `0 0 22px ${info.color}20` } : undefined}
+                >
+                  <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-2xl" style={{ background: `${info.color}22`, color: info.color }}>{info.icon}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-black">{info.title}</span>
+                    <span className="block text-[11px] leading-tight text-white/55">{info.desc} · респаун {info.respawn} с</span>
+                  </span>
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border-2 text-sm font-black" style={{ borderColor: on ? info.color : '#3a4679', background: on ? info.color : 'transparent', color: '#0b0e1a' }}>
+                    {on ? '✓' : ''}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          {!ITEM_KINDS.some((k) => s.itemToggles[k]) && (
+            <div className="mt-2 rounded-xl border border-[#ff4d6d]/40 bg-[#ff4d6d]/10 p-2 text-xs font-bold text-[#ffb3c0]">Все предметы отключены — на карте останутся только оружие игроков и укрытия.</div>
+          )}
+        </Section>
+
         <Section label={`Темы экзаменационных билетов · ${totalQ} вопросов`}>
           <div className="grid gap-2 sm:grid-cols-3">
             {(Object.keys(TOPIC_INFO) as TopicId[]).filter((t) => t !== 'custom').map((t) => {
@@ -201,8 +255,13 @@ export default function MatchSetup({
           </div>
         </Section>
 
+        <Section label="Сложность билетов">
+          <Seg value={s.ticketDiff} onChange={(v: TicketDiff) => set({ ticketDiff: v })} options={(Object.keys(TICKET_DIFF_INFO) as TicketDiff[]).map((k) => ({ value: k, label: TICKET_DIFF_INFO[k].title }))} />
+          <div className="text-xs text-white/50">Лёгкий билет — 20 секунд на ответ, средний — 30, сложный — 40. За сложные билеты больше очков.</div>
+        </Section>
+
         <Section
-          label={`Свои экзамены · выбрано ${s.packs.length}/${MAX_PACKS}`}
+          label={`Свои экзамены · выбрано ${s.packs.length}`}
           right={<button className="text-xs font-bold text-[var(--accent2)]" onClick={() => { sfx.init(); sfx.click(); setShowExams(true); }}>✏️ Конструктор и обмен</button>}
         >
           {myExams.length === 0 ? (
@@ -213,7 +272,7 @@ export default function MatchSetup({
             <div className="grid gap-2 sm:grid-cols-2">
               {myExams.map((e) => {
                 const on = s.packs.some((p) => p.id === e.id);
-                const disabled = !on && s.packs.length >= MAX_PACKS;
+                const disabled = false;
                 return (
                   <button
                     key={e.id}
@@ -266,9 +325,12 @@ export default function MatchSetup({
           <button className="btn btn-ghost w-full" onClick={() => { sfx.init(); sfx.click(); setMap({ seed: Math.floor(Math.random() * 999999) }); }}>
             🎲 Сгенерировать заново
           </button>
-          <div className="flex w-full gap-3 text-[11px] text-white/55">
-            <span><span className="text-[#36d6ff]">●</span> точки появления</span>
-            <span><span className="text-[#3ddc84]">✚</span> аптечки</span>
+          <div className="flex w-full flex-wrap gap-x-3 gap-y-1 text-[11px] text-white/55">
+            <span><span className="text-[#36d6ff]">●</span> появление</span>
+            <span className={s.itemToggles.health ? '' : 'line-through opacity-30'}><span className="text-[#3ddc84]">✚</span> аптечки</span>
+            <span className={s.itemToggles.shield ? '' : 'line-through opacity-30'}><span className="text-[#36d6ff]">●</span> щит</span>
+            <span className={s.itemToggles.speed ? '' : 'line-through opacity-30'}><span className="text-[#ffc53d]">●</span> скорость</span>
+            <span className={s.itemToggles.bomb ? '' : 'line-through opacity-30'}><span className="text-[#ff4d6d]">●</span> бомба</span>
           </div>
           {error && <div className="w-full rounded-lg bg-[var(--danger)]/20 p-2 text-sm font-bold text-[#ffb3c0]">{error}</div>}
           <button

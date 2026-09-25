@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import {
-  BOTS, BotKind, ClientAction, ClientUpdate, GameMode, Look, MatchNet, MatchSettings, MODE_INFO, MV_ADS, MV_BACK, MV_FIRE,
-  MV_GROUND, MV_MOVE, MV_RELOAD, MV_SPRINT, PLAYER_RADIUS, PlayerNet, ShotWeapon, SimEvent, Snapshot, STEP_UP, TopicId,
-  WeaponId, WEAPONS,
+  BOTS, BotKind, ClientAction, ClientUpdate, ExamDiff, GameMode, ITEM_INFO, ItemKind, Look, MatchNet, MatchSettings, MODE_INFO,
+  MV_ADS, MV_BACK, MV_FIRE, MV_GROUND, MV_MOVE, MV_RELOAD, MV_SPRINT, PLAYER_RADIUS, PlayerNet, ShotWeapon, SimEvent, Snapshot,
+  SPEED_MUL, STEP_UP, TopicId, WeaponId, WEAPONS,
 } from '../shared/types';
 import { buildMap, collideCircle, groundAt, hitNormal, losClear, MapData, mapKey, rayBoxes, rayHitbox } from '../shared/maps';
 import { buildWorld, getGlowTexture, WorldBuild } from './world';
@@ -40,6 +40,18 @@ export interface HudData {
   online: boolean;
   botsAlive: number;
   streak: number;
+  speed: number;
+  bomb: number;
+}
+
+export interface ChatMsg {
+  id: number;
+  by: string;
+  name: string;
+  text: string;
+  color: string;
+  mine: boolean;
+  t: number;
 }
 
 export interface FeedItem {
@@ -74,6 +86,7 @@ export interface EngineEvents {
   lock(locked: boolean): void;
   fatal(msg: string): void;
   fps?: (f: number) => void;
+  chat?: (m: ChatMsg) => void;
 }
 
 export interface EngineOptions {
@@ -97,11 +110,14 @@ interface View {
   x: number; y: number; z: number; ry: number; rx: number;
   tx: number; ty: number; tz: number; tr: number; trx: number;
   lx: number; lz: number; spd: number;
-  hp: number; mhp: number; alive: boolean; mv: number; sh: boolean; hurtT: number; scale: number;
+  hp: number; mhp: number; alive: boolean; mv: number; sh: boolean; inv: boolean; bomb: boolean; speed: boolean; hurtT: number; scale: number;
+  animAcc: number;
 }
 
-interface PackView {
+interface ItemView {
   group: THREE.Group;
+  spin: THREE.Object3D;
+  k: ItemKind;
   x: number;
   z: number;
   on: boolean;
@@ -133,12 +149,18 @@ export class Engine {
   private input: Input;
   private views = new Map<string, View>();
   private myModel: CharacterModel;
-  private packs: PackView[] = [];
-  private packRes: { geo: THREE.BoxGeometry; red: THREE.MeshLambertMaterial; white: THREE.MeshLambertMaterial; glow: THREE.SpriteMaterial };
+  private items: ItemView[] = [];
+  private itemRes: {
+    geo: THREE.BoxGeometry; oct: THREE.OctahedronGeometry; sphere: THREE.SphereGeometry;
+    red: THREE.MeshLambertMaterial; white: THREE.MeshLambertMaterial; cyan: THREE.MeshLambertMaterial;
+    yellow: THREE.MeshLambertMaterial; black: THREE.MeshLambertMaterial; glows: Record<ItemKind, THREE.SpriteMaterial>;
+  };
   private me = {
     x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, pitch: -0.05, grounded: true, coyote: 0, jumpBuf: 0,
-    alive: false, life: 0, hp: 100, sh: false, sprint: false, ads: false, moving: false, back: false,
+    alive: false, life: 0, hp: 100, sh: false, inv: false, speedT: 0, bombT: 0, sprint: false, ads: false, moving: false, back: false,
   };
+  private beepT = 0;
+  private chatId = 0;
   private wpn = {
     primary: 'rifle' as WeaponId, cur: 'rifle' as WeaponId, ammo: {} as Record<WeaponId, number>,
     reloadT: 0, fireCd: 0, bloom: 0, trigger: false, kick: 0, kickYaw: 0, autoReload: 0,
@@ -183,6 +205,8 @@ export class Engine {
   private emaFps = 60;
   private fpsEmitT = 0;
   private autoQT = 0;
+  private overlayAcc = 0;
+  private idleRenderAcc = 0;
   private opts: EngineOptions;
   private events: EngineEvents;
   private high: boolean;
@@ -215,11 +239,17 @@ export class Engine {
     this.myModel = new CharacterModel(opts.profile.look, { shadows: this.high, weapon: 'rifle' });
     this.myModel.root.visible = false;
     this.scene.add(this.myModel.root);
-    this.packRes = {
+    const glowFor = (c: string) => new THREE.SpriteMaterial({ map: getGlowTexture(), color: c, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.7 });
+    this.itemRes = {
       geo: new THREE.BoxGeometry(1, 1, 1),
+      oct: new THREE.OctahedronGeometry(0.42, 0),
+      sphere: new THREE.SphereGeometry(0.36, 12, 8),
       red: new THREE.MeshLambertMaterial({ color: '#ff2d55', emissive: '#7a0018' }),
       white: new THREE.MeshLambertMaterial({ color: '#ffffff' }),
-      glow: new THREE.SpriteMaterial({ map: getGlowTexture(), color: '#3ddc84', transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.7 }),
+      cyan: new THREE.MeshLambertMaterial({ color: '#7fe9ff', emissive: '#0b5f7a', transparent: true, opacity: 0.85 }),
+      yellow: new THREE.MeshLambertMaterial({ color: '#ffd23d', emissive: '#7a5a00' }),
+      black: new THREE.MeshLambertMaterial({ color: '#23252d', emissive: '#3a0008' }),
+      glows: { health: glowFor('#3ddc84'), shield: glowFor('#36d6ff'), bomb: glowFor('#ff4d6d'), speed: glowFor('#ffc53d') },
     };
     this.myId = opts.transport.playerId;
     opts.transport.onFatal = (m) => this.events.fatal(m);
@@ -250,10 +280,10 @@ export class Engine {
     if (this.world) this.world.dispose();
     for (const v of this.views.values()) v.model.dispose();
     this.myModel.dispose();
-    this.packRes.geo.dispose();
-    this.packRes.red.dispose();
-    this.packRes.white.dispose();
-    this.packRes.glow.dispose();
+    const R = this.itemRes;
+    R.geo.dispose(); R.oct.dispose(); R.sphere.dispose();
+    R.red.dispose(); R.white.dispose(); R.cyan.dispose(); R.yellow.dispose(); R.black.dispose();
+    for (const g of Object.values(R.glows)) g.dispose();
     this.renderer.dispose();
     try {
       this.renderer.forceContextLoss();
@@ -301,7 +331,12 @@ export class Engine {
   }
 
   /** Вызывается интерфейсом после экзамена. */
-  respawn(weapon: WeaponId, correct: boolean, time: number, topic: TopicId) {
+  sendChat(text: string) {
+    const t = text.trim().slice(0, 120);
+    if (t) this.pending.push({ a: 'chat', text: t });
+  }
+
+  respawn(weapon: WeaponId, correct: boolean, time: number, topic: TopicId, diff: ExamDiff = 2) {
     if (!this.map || this.me.alive) return;
     const [x, z] = this.chooseSpawn();
     const y = groundAt(this.map, x, z, PLAYER_RADIUS, 10, STEP_UP);
@@ -321,7 +356,7 @@ export class Engine {
     this.myModel.setWeapon(weapon);
     this.myModel.root.visible = true;
     this.myModel.spawnT = 0;
-    this.pending.push({ a: 'respawn', w: weapon, x: r2(x), y: r2(y), z: r2(z), correct, time: r2(time), topic });
+    this.pending.push({ a: 'respawn', w: weapon, x: r2(x), y: r2(y), z: r2(z), correct, time: r2(time), topic, d: diff });
     this.effects.spawnFx(x, y, z);
     sfx.spawn();
     this.entrance = false;
@@ -368,7 +403,8 @@ export class Engine {
   }
 
   private ensureWorld(s: MatchSettings) {
-    const key = mapKey(s.map) + '|' + s.map.theme;
+    const enabledItems = (Object.keys(s.itemToggles) as ItemKind[]).filter((k) => s.itemToggles[k]).join(',');
+    const key = mapKey(s.map) + '|' + s.map.theme + '|' + enabledItems;
     if (key === this.worldKey) return;
     this.worldKey = key;
     if (this.world) {
@@ -381,26 +417,60 @@ export class Engine {
     this.scene.fog = this.world.fog;
     this.scene.background = this.world.background;
     this.overlay.setMinimap(this.world.minimap, this.map.half);
-    for (const p of this.packs) this.scene.remove(p.group);
-    this.packs = this.map.packs.map(([x, z]) => {
+    for (const p of this.items) this.scene.remove(p.group);
+    this.items = this.map.items.filter((it) => s.itemToggles[it.k]).map((it) => {
       const g = new THREE.Group();
-      const R = this.packRes;
-      const base = new THREE.Mesh(R.geo, R.white);
-      base.scale.set(0.62, 0.62, 0.62);
-      const c1 = new THREE.Mesh(R.geo, R.red);
-      c1.scale.set(0.66, 0.2, 0.66 * 0.3);
-      const c2 = new THREE.Mesh(R.geo, R.red);
-      c2.scale.set(0.2, 0.66, 0.66 * 0.3);
-      const c3 = new THREE.Mesh(R.geo, R.red);
-      c3.scale.set(0.66 * 0.3, 0.2, 0.66);
-      const c4 = new THREE.Mesh(R.geo, R.red);
-      c4.scale.set(0.66 * 0.3, 0.66, 0.2);
-      const glow = new THREE.Sprite(R.glow);
-      glow.scale.setScalar(2.4);
-      g.add(base, c1, c2, c3, c4, glow);
-      g.position.set(x, 0.9, z);
+      const spin = new THREE.Group();
+      const R = this.itemRes;
+      if (it.k === 'health') {
+        const base = new THREE.Mesh(R.geo, R.white);
+        base.scale.set(0.62, 0.62, 0.62);
+        const c1 = new THREE.Mesh(R.geo, R.red);
+        c1.scale.set(0.66, 0.2, 0.66 * 0.3);
+        const c2 = new THREE.Mesh(R.geo, R.red);
+        c2.scale.set(0.2, 0.66, 0.66 * 0.3);
+        const c3 = new THREE.Mesh(R.geo, R.red);
+        c3.scale.set(0.66 * 0.3, 0.2, 0.66);
+        const c4 = new THREE.Mesh(R.geo, R.red);
+        c4.scale.set(0.66 * 0.3, 0.66, 0.2);
+        spin.add(base, c1, c2, c3, c4);
+      } else if (it.k === 'shield') {
+        const core = new THREE.Mesh(R.oct, R.cyan);
+        const ring = new THREE.Mesh(R.geo, R.white);
+        ring.scale.set(1.1, 0.06, 0.06);
+        const ring2 = new THREE.Mesh(R.geo, R.white);
+        ring2.scale.set(0.06, 0.06, 1.1);
+        spin.add(core, ring, ring2);
+      } else if (it.k === 'speed') {
+        // молния из двух наклонённых брусков
+        const a = new THREE.Mesh(R.geo, R.yellow);
+        a.scale.set(0.16, 0.5, 0.16);
+        a.position.set(-0.1, 0.18, 0);
+        a.rotation.z = 0.55;
+        const b = new THREE.Mesh(R.geo, R.yellow);
+        b.scale.set(0.16, 0.5, 0.16);
+        b.position.set(0.1, -0.18, 0);
+        b.rotation.z = 0.55;
+        const c = new THREE.Mesh(R.geo, R.yellow);
+        c.scale.set(0.42, 0.14, 0.16);
+        spin.add(a, b, c);
+      } else {
+        const body = new THREE.Mesh(R.sphere, R.black);
+        const fuse = new THREE.Mesh(R.geo, R.white);
+        fuse.scale.set(0.06, 0.28, 0.06);
+        fuse.position.set(0.1, 0.42, 0);
+        fuse.rotation.z = -0.4;
+        const spark = new THREE.Mesh(R.geo, R.yellow);
+        spark.scale.set(0.12, 0.12, 0.12);
+        spark.position.set(0.17, 0.56, 0);
+        spin.add(body, fuse, spark);
+      }
+      const glow = new THREE.Sprite(R.glows[it.k]);
+      glow.scale.setScalar(it.k === 'health' ? 2.4 : 2.0);
+      g.add(spin, glow);
+      g.position.set(it.x, 0.9, it.z);
       this.scene.add(g);
-      return { group: g, x, z, on: true };
+      return { group: g, spin, k: it.k, x: it.x, z: it.z, on: true };
     });
   }
 
@@ -448,12 +518,15 @@ export class Engine {
   private createView(id: string, bot: boolean, look: Look, name: string, kind: BotKind | null, x: number, y: number, z: number): View {
     const scale = kind ? BOTS[kind].scale : 1;
     const weapon: WeaponId | 'none' = kind === 'runner' ? 'none' : kind === 'heavy' ? 'lmg' : 'rifle';
-    const model = new CharacterModel(look, { scale, shadows: this.high, weapon, glowEyes: bot });
+    // Тени окружения остаются, а персонажам достаточно дешёвого blob-shadow:
+    // иначе 20+ частей × до 24 ботов повторно рисуются в shadow pass.
+    const model = new CharacterModel(look, { scale, shadows: false, weapon, glowEyes: bot });
     model.root.position.set(x, y, z);
     this.scene.add(model.root);
     const v: View = {
       id, bot, kind, name, look, model, x, y, z, ry: 0, rx: 0, tx: x, ty: y, tz: z, tr: 0, trx: 0, lx: x, lz: z, spd: 0,
-      hp: 100, mhp: 100, alive: true, mv: 0, sh: false, hurtT: -10, scale,
+      hp: 100, mhp: 100, alive: true, mv: 0, sh: false, inv: false, bomb: false, speed: false, hurtT: -10, scale,
+      animAcc: Math.random() * 0.04,
     };
     this.views.set(id, v);
     return v;
@@ -507,7 +580,7 @@ export class Engine {
       if (wasAlive && p.st !== 'alive') this.killView(v);
       v.alive = p.st === 'alive';
       v.tx = p.x; v.ty = p.y; v.tz = p.z; v.tr = p.ry; v.trx = p.rx;
-      v.hp = p.hp; v.mhp = 100; v.mv = p.mv; v.sh = p.sh === 1; v.name = p.name;
+      v.hp = p.hp; v.mhp = 100; v.mv = p.mv; v.sh = p.sh === 1; v.inv = p.inv === 1; v.bomb = p.bm > 0; v.speed = p.sp > 0; v.name = p.name;
       v.model.setWeapon(p.w);
       if (v.alive && !wasAlive) {
         v.x = p.x; v.y = p.y; v.z = p.z; v.ry = p.ry;
@@ -530,9 +603,9 @@ export class Engine {
       if (b.st !== 'alive' && v.alive) this.killView(v);
     }
     for (const id of [...this.views.keys()]) if (!seen.has(id)) this.removeView(id);
-    for (const pk of s.packs) {
-      const pv = this.packs[pk.id];
-      if (pv) pv.on = pk.on;
+    for (const it of s.items) {
+      const iv = this.items[it.id];
+      if (iv) iv.on = it.on;
     }
     this.myNet = mine;
     for (const e of s.events) if (e.t === 'kill' && e.victim === s.you) this.lastKiller = { name: e.byName, w: e.w };
@@ -550,6 +623,9 @@ export class Engine {
   private syncSelf(mine: PlayerNet) {
     this.me.hp = mine.hp;
     this.me.sh = mine.sh === 1;
+    this.me.inv = mine.inv === 1;
+    this.me.speedT = mine.sp;
+    this.me.bombT = mine.bm;
     if (mine.life > this.me.life) {
       this.me.life = mine.life;
       if (mine.st === 'alive') {
@@ -674,8 +750,13 @@ export class Engine {
         break;
       }
       case 'boom': {
-        if (e.by === you) break;
+        if (e.by === you && e.k !== 'bomb') break;
         this.explosionFx(e.x, e.y, e.z, e.r);
+        if (e.k === 'bomb') {
+          const v = this.views.get(e.by);
+          if (v) v.bomb = false;
+          if (e.by === you) this.me.bombT = 0;
+        }
         break;
       }
       case 'melee': {
@@ -685,15 +766,26 @@ export class Engine {
         break;
       }
       case 'pickup': {
-        const pk = this.packs[e.id];
-        if (pk) {
-          pk.on = false;
-          this.effects.healFx(pk.x, 0, pk.z);
+        const iv = this.items[e.id];
+        const kind: ItemKind = e.k ?? iv?.k ?? 'health';
+        if (iv) {
+          iv.on = false;
+          if (kind === 'health') this.effects.healFx(iv.x, 0, iv.z);
+          else this.effects.ring(iv.x, 0.1, iv.z, parseInt(ITEM_INFO[kind].color.slice(1), 16), 2.2, 0.45);
         }
         if (e.by === you) {
-          sfx.pickup();
-          this.events.popup('+50 ОЗ', '#3ddc84');
+          if (kind === 'health') { sfx.pickup(); this.events.popup('+50 ОЗ', '#3ddc84'); }
+          else if (kind === 'shield') { sfx.powerup(); this.events.popup('ЩИТ: 3 секунды неуязвимости', '#36d6ff'); }
+          else if (kind === 'speed') { sfx.powerup(); this.events.popup('СКОРОСТЬ ×1.5 на 8 с', '#ffc53d'); this.me.speedT = 8; }
+          else { sfx.lock(); this.events.announce('БОМБА! БЕГИ К ВРАГАМ!', 'bad'); this.me.bombT = 5; this.beepT = 0; }
+        } else {
+          const v = this.views.get(e.by);
+          if (v && kind === 'bomb') v.bomb = true;
         }
+        break;
+      }
+      case 'chat': {
+        this.events.chat?.({ id: ++this.chatId, by: e.by, name: e.name, text: e.text, color: e.color, mine: e.by === you, t: Date.now() });
         break;
       }
       case 'spawn': {
@@ -771,7 +863,8 @@ export class Engine {
     const firing = inp.fire();
     me.ads = inp.ads() && w.reloadT <= 0;
     me.sprint = inp.sprint() && my > 0.3 && !me.ads && !firing;
-    const speed = 6.4 * wd.speedMul * (me.sprint ? 1.42 : 1) * (me.ads ? 0.62 : 1);
+    const boost = me.speedT > 0 ? SPEED_MUL : 1;
+    const speed = 6.4 * wd.speedMul * (me.sprint ? 1.42 : 1) * (me.ads ? 0.62 : 1) * boost;
     const sy = Math.sin(me.yaw), cy = Math.cos(me.yaw);
     const wx = (-sy * my + cy * mx) * speed;
     const wz = (-cy * my - sy * mx) * speed;
@@ -915,7 +1008,7 @@ export class Engine {
     let id: string | null = null;
     let head = false;
     for (const v of this.views.values()) {
-      if (!v.alive || !this.isHostile(v) || v.sh) continue;
+      if (!v.alive || !this.isHostile(v) || v.inv) continue;
       const h = rayHitbox(ox, oy, oz, d.x, d.y, d.z, v.x, v.y, v.z, v.scale, best);
       if (h) { best = h.t; id = v.id; head = h.head; }
     }
@@ -923,7 +1016,7 @@ export class Engine {
       // помощь в прицеливании на сенсорных экранах
       let bestAng = 0.055;
       for (const v of this.views.values()) {
-        if (!v.alive || !this.isHostile(v) || v.sh) continue;
+        if (!v.alive || !this.isHostile(v) || v.inv) continue;
         const cx = v.x - ox, cyy = v.y + 1.1 * v.scale - oy, cz = v.z - oz;
         const dist = Math.hypot(cx, cyy, cz);
         if (dist > range || dist > best + 1) continue;
@@ -1031,15 +1124,25 @@ export class Engine {
       const m = v.model;
       m.root.position.set(v.x, v.y, v.z);
       m.root.rotation.y = v.ry;
-      m.animate(dt, {
-        speed: (v.mv & MV_MOVE) !== 0 ? Math.max(v.spd, 2) : v.spd * 0.5,
-        grounded: (v.mv & MV_GROUND) !== 0,
-        back: (v.mv & MV_BACK) !== 0,
-        sprint: (v.mv & MV_SPRINT) !== 0,
-        pitch: v.rx,
-        firing: (v.mv & MV_FIRE) !== 0,
-      });
-      m.setShield(v.sh);
+      // Animation LOD: дальним моделям не нужны 60 обновлений скелета/частей в секунду.
+      const ddx = v.x - this.me.x, ddz = v.z - this.me.z;
+      const d2 = ddx * ddx + ddz * ddz;
+      const animStep = d2 > 2025 ? 0.1 : d2 > 900 ? 0.05 : this.high ? 0 : 1 / 30;
+      v.animAcc += dt;
+      if (!animStep || v.animAcc >= animStep) {
+        const adt = v.animAcc;
+        v.animAcc = 0;
+        m.animate(adt, {
+          speed: (v.mv & MV_MOVE) !== 0 ? Math.max(v.spd, 2) : v.spd * 0.5,
+          grounded: (v.mv & MV_GROUND) !== 0,
+          back: (v.mv & MV_BACK) !== 0,
+          sprint: (v.mv & MV_SPRINT) !== 0,
+          pitch: v.rx,
+          firing: (v.mv & MV_FIRE) !== 0,
+        });
+      }
+      m.setShield(v.sh || v.bomb || v.inv, v.bomb);
+      if (v.speed && v.spd > 2 && Math.random() < dt * 14) this.effects.dust(v.x, v.y, v.z, 1, 0xffd23d);
     }
     const me = this.me;
     if (me.alive && this.phase !== 'lobby' && this.phase !== 'over') {
@@ -1049,7 +1152,8 @@ export class Engine {
       m.root.position.set(me.x, me.y, me.z);
       m.root.rotation.y = me.yaw;
       m.animate(dt, { speed: Math.hypot(me.vx, me.vz), grounded: me.grounded, back: me.back, sprint: me.sprint, pitch: me.pitch + this.wpn.kick, firing: this.input.fire() });
-      m.setShield(me.sh);
+      m.setShield(me.sh || me.bombT > 0 || me.inv, me.bombT > 0);
+      if (me.speedT > 0 && me.moving && Math.random() < dt * 16) this.effects.dust(me.x, me.y, me.z, 1, 0xffd23d);
       const g = this.map ? groundAt(this.map, me.x, me.z, PLAYER_RADIUS, me.y, STEP_UP) : 0;
       m.blob.position.y = (g - me.y) / m.scale + 0.03;
     } else if (!me.alive) {
@@ -1057,12 +1161,25 @@ export class Engine {
     }
   }
 
-  private updatePacks(dt: number) {
-    for (const p of this.packs) {
-      p.group.visible = p.on;
-      if (!p.on) continue;
-      p.group.rotation.y += dt * 1.6;
-      p.group.position.y = 0.9 + Math.sin(this.time * 3 + p.x) * 0.15;
+  private updateItems(dt: number) {
+    for (const it of this.items) {
+      it.group.visible = it.on;
+      if (!it.on) continue;
+      it.spin.rotation.y += dt * (it.k === 'speed' ? 3.2 : 1.6);
+      if (it.k === 'shield') it.spin.rotation.x += dt * 1.1;
+      it.group.position.y = 0.9 + Math.sin(this.time * 3 + it.x) * 0.15;
+    }
+    // локальные таймеры эффектов (между снимками)
+    const me = this.me;
+    if (me.speedT > 0) me.speedT = Math.max(0, me.speedT - dt);
+    if (me.bombT > 0) {
+      me.bombT = Math.max(0, me.bombT - dt);
+      this.beepT -= dt;
+      if (this.beepT <= 0) {
+        this.beepT = me.bombT < 2 ? 0.18 : 0.5;
+        sfx.beep(me.bombT < 2);
+        this.addTrauma(0.05);
+      }
     }
   }
 
@@ -1075,6 +1192,7 @@ export class Engine {
       const wd = WEAPONS[this.wpn.cur];
       if (me.ads) targetFov = this.baseFov / wd.zoom;
       else if (me.sprint) targetFov = this.baseFov + 7;
+      if (me.speedT > 0 && !me.ads) targetFov += 5;
       const yaw = me.yaw + this.wpn.kickYaw;
       const pitch = me.pitch + this.wpn.kick;
       const cp = Math.cos(pitch), sp = Math.sin(pitch), cyw = Math.cos(yaw), syw = Math.sin(yaw);
@@ -1139,7 +1257,7 @@ export class Engine {
       }
       dots.push({ x: v.x, z: v.z, color: v.bot ? '#ff4d4d' : hostile ? '#ffa24d' : '#4de1ff', r: v.kind === 'heavy' ? 4.5 : 3.2 });
     }
-    for (const p of this.packs) if (p.on) dots.push({ x: p.x, z: p.z, color: '#3ddc84', r: 4, pack: true });
+    for (const it of this.items) if (it.on) dots.push({ x: it.x, z: it.z, color: ITEM_INFO[it.k].color, r: 4, pack: it.k === 'health' });
     this.vignette = Math.max(0, this.vignette - dt * 1.4);
     const alive = this.me.alive && (this.phase === 'play' || this.phase === 'countdown');
     const wd = WEAPONS[this.wpn.cur];
@@ -1183,6 +1301,7 @@ export class Engine {
       timeLeft, countdown, state: m?.state ?? 'lobby', mode: m?.settings.mode ?? 'coop', wave: m?.wave ?? 1,
       teamBotKills: m?.teamBotKills ?? 0, ping: Math.round(this.opts.transport.rtt), online: this.opts.transport.online, botsAlive,
       streak: n?.streak ?? 0,
+      speed: this.me.speedT, bomb: this.me.bombT,
     });
   }
 
@@ -1234,6 +1353,16 @@ export class Engine {
     this.opts.transport.tick(this.buildUpdate);
     const snap = this.opts.transport.take();
     if (snap) this.applySnapshot(snap);
+    // В паузе/лобби/экзамене 3D — только фон. 10/30 Гц достаточно и заметно экономит батарею.
+    const idleStep = this.paused ? 0.1 : (this.phase === 'lobby' || this.phase === 'exam' || this.phase === 'over') ? 1 / 30 : 0;
+    if (idleStep) {
+      this.idleRenderAcc += dt;
+      if (this.idleRenderAcc < idleStep) return;
+      dt = this.idleRenderAcc;
+      this.idleRenderAcc = 0;
+    } else {
+      this.idleRenderAcc = 0;
+    }
     if (this.phase === 'dying') {
       this.dyingT -= dt;
       if (this.dyingT <= 0) this.setPhase('exam');
@@ -1241,12 +1370,17 @@ export class Engine {
     this.updateLocal(dt);
     this.updateRockets(dt);
     this.updateViews(dt);
-    this.updatePacks(dt);
+    this.updateItems(dt);
     this.effects.update(dt);
     this.updateCamera(dt);
     if (this.world) this.world.update(dt, this.camera.position);
     this.renderer.render(this.scene, this.camera);
-    this.drawOverlay(dt);
+    this.overlayAcc += dt;
+    const overlayStep = this.opts.touch || !this.high ? 1 / 30 : 0;
+    if (!overlayStep || this.overlayAcc >= overlayStep) {
+      this.drawOverlay(this.overlayAcc);
+      this.overlayAcc = 0;
+    }
     this.hudT -= dt;
     if (this.hudT <= 0) {
       this.hudT = 1 / 15;

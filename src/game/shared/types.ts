@@ -2,13 +2,19 @@
 
 export type GameMode = 'pvp' | 'coop' | 'ffa';
 export type TopicId = 'flags' | 'history' | 'law' | 'custom';
-export type MapLayout = 'arena' | 'city' | 'warehouse' | 'ruins';
+export type MapLayout = 'arena' | 'city' | 'warehouse' | 'ruins' | 'fort' | 'school' | 'bunker';
+export const LAYOUTS: MapLayout[] = ['arena', 'city', 'warehouse', 'ruins', 'fort', 'school', 'bunker'];
+export type ExamDiff = 1 | 2 | 3;
+export type TicketDiff = 'any' | 'easy' | 'medium' | 'hard';
+export type ItemKind = 'health' | 'shield' | 'bomb' | 'speed';
+export const ITEM_KINDS: ItemKind[] = ['health', 'shield', 'bomb', 'speed'];
+export type ItemToggles = Record<ItemKind, boolean>;
 export type MapTheme = 'day' | 'sunset' | 'night' | 'snow';
 export type MapSize = 's' | 'm' | 'l';
 export type Density = 'low' | 'mid' | 'high';
 export type Difficulty = 'easy' | 'normal' | 'hard';
 export type WeaponId = 'rpg' | 'lmg' | 'sniper' | 'rifle' | 'shotgun' | 'smg' | 'pistol';
-export type ShotWeapon = WeaponId | 'bot';
+export type ShotWeapon = WeaponId | 'bot' | 'bomb';
 export type HatId = 'none' | 'cap' | 'helmet' | 'ushanka' | 'crown' | 'horns' | 'mohawk' | 'tophat';
 export type FaceId = 'none' | 'visor' | 'glasses' | 'mask' | 'mustache';
 export type BotKind = 'grunt' | 'runner' | 'heavy';
@@ -37,6 +43,10 @@ export interface CustomQuestion {
   options: [string, string, string, string];
   answer: number;
   note: string;
+  /** картинка (data URL, jpeg/png/webp) */
+  img?: string;
+  /** сложность билета: 1 — лёгкий (20 с), 2 — средний (30 с), 3 — сложный (40 с) */
+  d?: ExamDiff;
 }
 
 /** Пользовательский пакет вопросов («свой экзамен»). */
@@ -46,14 +56,19 @@ export interface ExamPack {
   questions: CustomQuestion[];
 }
 
-export const MAX_PACKS = 4;
-export const MAX_PACK_QUESTIONS = 30;
+/** Технические пределы (не ограничение для игрока, а защита сервера от мусора). */
+export const PACK_SAFETY_QUESTIONS = 500;
+export const PACK_SAFETY_PACKS = 50;
+export const IMG_MAX_CHARS = 400000;
 
 export interface MatchSettings {
   mode: GameMode;
   map: MapConfig;
   topics: TopicId[];
   packs: ExamPack[];
+  ticketDiff: TicketDiff;
+  /** Какие предметы появляются на карте. */
+  itemToggles: ItemToggles;
   bots: number;
   difficulty: Difficulty;
   duration: number; // секунды
@@ -72,6 +87,9 @@ export const LAYOUT_INFO: Record<MapLayout, { title: string; desc: string; icon:
   city: { title: 'Кварталы', desc: 'Дома, улицы и брошенные машины', icon: '🏙️' },
   warehouse: { title: 'Склад', desc: 'Контейнеры и узкие проходы', icon: '📦' },
   ruins: { title: 'Руины', desc: 'Лабиринт полуразрушенных стен', icon: '🧱' },
+  fort: { title: 'Крепость', desc: 'Цитадель в центре, башни и ров укрытий', icon: '🏰' },
+  school: { title: 'Школа', desc: 'Классы с партами и длинные коридоры', icon: '🏫' },
+  bunker: { title: 'Бункер', desc: 'Комнаты, дверные проёмы и колонны', icon: '🚪' },
 };
 
 export const THEME_INFO: Record<MapTheme, { title: string; icon: string }> = {
@@ -107,6 +125,48 @@ export const TOPIC_INFO: Record<TopicId, { title: string; short: string; count: 
 };
 
 export const DURATIONS = [120, 180, 300, 480, 600];
+
+// ---------- Сложность билетов ----------
+
+export const EXAM_DIFF_INFO: Record<ExamDiff, { title: string; short: string; time: number; mult: number; color: string }> = {
+  1: { title: 'Лёгкий', short: 'Лёгк.', time: 20, mult: 1, color: '#3ddc84' },
+  2: { title: 'Средний', short: 'Средн.', time: 30, mult: 1.25, color: '#ffc53d' },
+  3: { title: 'Сложный', short: 'Слож.', time: 40, mult: 1.5, color: '#ff4d6d' },
+};
+
+export const TICKET_DIFF_INFO: Record<TicketDiff, { title: string; d: ExamDiff | 0 }> = {
+  any: { title: 'Все вперемешку', d: 0 },
+  easy: { title: 'Только лёгкие (20 с)', d: 1 },
+  medium: { title: 'Только средние (30 с)', d: 2 },
+  hard: { title: 'Только сложные (40 с)', d: 3 },
+};
+
+export function normDiff(v: unknown): ExamDiff {
+  const n = Math.round(Number(v));
+  return n === 1 || n === 3 ? n : 2;
+}
+
+export function examTime(d: ExamDiff): number {
+  return EXAM_DIFF_INFO[d].time;
+}
+
+// ---------- Предметы на карте ----------
+
+export const ITEM_INFO: Record<ItemKind, { title: string; desc: string; respawn: number; color: string; icon: string }> = {
+  health: { title: 'Аптечка', desc: '+50 ОЗ', respawn: 15, color: '#3ddc84', icon: '✚' },
+  shield: { title: 'Щит', desc: 'Полная неуязвимость на 3 секунды', respawn: 25, color: '#36d6ff', icon: '🛡' },
+  bomb: { title: 'Бомба', desc: 'Неуязвимость, но через 5 секунд взрыв. Беги к врагам!', respawn: 30, color: '#ff4d6d', icon: '💣' },
+  speed: { title: 'Скорость', desc: '+50% к скорости на 8 секунд', respawn: 20, color: '#ffc53d', icon: '⚡' },
+};
+export const SHIELD_ITEM_MS = 3000;
+export const BOMB_MS = 5000;
+export const SPEED_MS = 8000;
+export const SPEED_MUL = 1.5;
+
+// ---------- Чат ----------
+
+export const CHAT_MAX = 120;
+export const QUICK_CHAT = ['Помогите!', 'За мной!', 'Отличный выстрел!', 'Ахаха', 'Прикрой!', 'Идём на босса', 'Хорошая игра', 'Секунду…'];
 
 // ---------- Оружие ----------
 
@@ -148,20 +208,22 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
 export const WEAPON_ORDER: WeaponId[] = ['rpg', 'lmg', 'sniper', 'rifle', 'shotgun', 'smg', 'pistol'];
 export const EXAM_TIME = 30;
 
-export function unlockedCount(correct: boolean, t: number): number {
+/** Сколько оружия открыто: за время T (20/30/40 с) блокируется по одному каждые T/6 секунд, минимум 2. */
+export function unlockedCount(correct: boolean, t: number, T: number = EXAM_TIME): number {
   if (!correct) return 1;
-  return Math.max(2, WEAPON_ORDER.length - Math.floor(Math.max(0, t) / 5));
+  const step = Math.max(1, T) / 6;
+  return Math.max(2, WEAPON_ORDER.length - Math.floor(Math.max(0, t) / step));
 }
 
-export function availableWeapons(correct: boolean, t: number): WeaponId[] {
-  const n = unlockedCount(correct, t);
+export function availableWeapons(correct: boolean, t: number, T: number = EXAM_TIME): WeaponId[] {
+  const n = unlockedCount(correct, t, T);
   return WEAPON_ORDER.slice(WEAPON_ORDER.length - n);
 }
 
-export function answerPoints(correct: boolean, t: number): number {
+export function answerPoints(correct: boolean, t: number, T: number = EXAM_TIME, d: ExamDiff = 2): number {
   if (!correct) return 0;
-  const tt = Math.min(EXAM_TIME, Math.max(0, t));
-  return 50 + Math.round(50 * (1 - tt / EXAM_TIME));
+  const tt = Math.min(T, Math.max(0, t));
+  return Math.round((50 + 50 * (1 - tt / T)) * EXAM_DIFF_INFO[d].mult);
 }
 
 // ---------- Боты ----------
@@ -228,6 +290,12 @@ export interface PlayerNet {
   ok: number;
   qa: number;
   streak: number;
+  /** осталось секунд ускорения */
+  sp: number;
+  /** осталось секунд до взрыва бомбы (0 — бомбы нет) */
+  bm: number;
+  /** 1 — неуязвим (щит появления, щит-предмет или бомба) */
+  inv: number;
 }
 
 export interface BotNet {
@@ -243,8 +311,9 @@ export interface BotNet {
   mv: number;
 }
 
-export interface PackNet {
+export interface ItemNet {
   id: number;
+  k: ItemKind;
   x: number;
   z: number;
   on: boolean;
@@ -261,15 +330,19 @@ export interface MatchNet {
   roomName: string;
   code: string;
   matchId: number;
+  /** версия набора своих экзаменов (сами вопросы получают отдельно) */
+  packsVer: number;
+  packsInfo: { title: string; count: number }[];
 }
 
 export type SimEventBody =
   | { t: 'shot'; by: string; w: ShotWeapon; f: Vec3T; to: Vec3T }
   | { t: 'hit'; by: string; target: string; dmg: number; head: boolean; x: number; y: number; z: number; sp: number; ax: number; az: number }
   | { t: 'kill'; by: string; victim: string; w: ShotWeapon; head: boolean; byName: string; victimName: string; bot: boolean; pts: number; streak: number }
-  | { t: 'boom'; by: string; x: number; y: number; z: number; r: number }
+  | { t: 'boom'; by: string; x: number; y: number; z: number; r: number; k?: 'bomb' }
   | { t: 'melee'; by: string; target: string }
-  | { t: 'pickup'; id: number; by: string }
+  | { t: 'pickup'; id: number; by: string; k: ItemKind }
+  | { t: 'chat'; by: string; name: string; text: string; color: string }
   | { t: 'spawn'; id: string; x: number; y: number; z: number }
   | { t: 'msg'; text: string; kind: 'info' | 'join' | 'leave' | 'wave' }
   | { t: 'answer'; by: string; name: string; ok: boolean; pts: number }
@@ -284,7 +357,7 @@ export interface Snapshot {
   match: MatchNet;
   players: PlayerNet[];
   bots: BotNet[];
-  packs: PackNet[];
+  items: ItemNet[];
   events: SimEvent[];
 }
 
@@ -292,7 +365,8 @@ export type ClientAction =
   | { a: 'shot'; w: WeaponId; f: Vec3T; to: Vec3T }
   | { a: 'hit'; target: string; dmg: number; head: boolean; w: WeaponId; x: number; y: number; z: number }
   | { a: 'boom'; w: WeaponId; x: number; y: number; z: number }
-  | { a: 'respawn'; w: WeaponId; x: number; y: number; z: number; correct: boolean; time: number; topic: TopicId };
+  | { a: 'respawn'; w: WeaponId; x: number; y: number; z: number; correct: boolean; time: number; topic: TopicId; d?: number }
+  | { a: 'chat'; text: string };
 
 export interface ClientUpdate {
   x: number;
@@ -326,6 +400,8 @@ export const DEFAULT_SETTINGS: MatchSettings = {
   map: { layout: 'arena', size: 'm', density: 'mid', theme: 'day', seed: 1337 },
   topics: ['flags', 'history', 'law'],
   packs: [],
+  ticketDiff: 'any',
+  itemToggles: { health: true, shield: true, bomb: true, speed: true },
   bots: 8,
   difficulty: 'normal',
   duration: 180,
@@ -375,22 +451,33 @@ function sanitizeText(v: unknown, max: number): string {
     .slice(0, max);
 }
 
+const IMG_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+
+export function sanitizeImage(v: unknown): string | undefined {
+  if (typeof v !== 'string' || v.length < 32 || v.length > IMG_MAX_CHARS) return undefined;
+  return IMG_RE.test(v) ? v : undefined;
+}
+
 export function sanitizeExamPack(v: unknown): ExamPack | null {
   const o = obj(v);
   const title = sanitizeText(o.title, 60);
-  const raw = Array.isArray(o.questions) ? o.questions.slice(0, MAX_PACK_QUESTIONS) : [];
+  const raw = Array.isArray(o.questions) ? o.questions.slice(0, PACK_SAFETY_QUESTIONS) : [];
   const questions: CustomQuestion[] = [];
   for (const r of raw) {
     const q = obj(r);
     const text = sanitizeText(q.q, 300);
     const optsRaw = Array.isArray(q.options) ? q.options : [];
-    if (!text || optsRaw.length < 4) continue;
+    const img = sanitizeImage(q.img);
+    if ((!text && !img) || optsRaw.length < 4) continue;
     const options = [0, 1, 2, 3].map((i) => sanitizeText(optsRaw[i], 150)) as [string, string, string, string];
     if (options.some((s) => !s)) continue;
     let answer = Math.round(Number(q.answer));
     if (!Number.isFinite(answer)) answer = 0;
     answer = Math.max(0, Math.min(3, answer));
-    questions.push({ q: text, options, answer, note: sanitizeText(q.note, 300) });
+    const cq: CustomQuestion = { q: text || 'Что изображено на картинке?', options, answer, note: sanitizeText(q.note, 300) };
+    if (img) cq.img = img;
+    if (q.d !== undefined) cq.d = normDiff(q.d);
+    questions.push(cq);
   }
   if (!title || questions.length < 2) return null;
   const id = sanitizeText(o.id, 24) || `pack${Math.abs(title.length * 31 + questions.length * 7) % 100000}`;
@@ -400,7 +487,7 @@ export function sanitizeExamPack(v: unknown): ExamPack | null {
 export function sanitizePacks(v: unknown): ExamPack[] {
   if (!Array.isArray(v)) return [];
   const out: ExamPack[] = [];
-  for (const r of v.slice(0, MAX_PACKS)) {
+  for (const r of v.slice(0, PACK_SAFETY_PACKS)) {
     const p = sanitizeExamPack(r);
     if (p) out.push(p);
   }
@@ -410,6 +497,7 @@ export function sanitizePacks(v: unknown): ExamPack[] {
 export function sanitizeSettings(v: unknown): MatchSettings {
   const o = obj(v);
   const m = obj(o.map);
+  const it = obj(o.itemToggles);
   const topicsRaw = Array.isArray(o.topics) ? o.topics : [];
   const topics = (['flags', 'history', 'law'] as TopicId[]).filter((t) => topicsRaw.includes(t));
   const packs = sanitizePacks(o.packs);
@@ -419,7 +507,7 @@ export function sanitizeSettings(v: unknown): MatchSettings {
   return {
     mode: pick(o.mode, ['pvp', 'coop', 'ffa'] as const, 'coop'),
     map: {
-      layout: pick(m.layout, ['arena', 'city', 'warehouse', 'ruins'] as const, 'arena'),
+      layout: pick(m.layout, LAYOUTS, 'arena'),
       size: pick(m.size, ['s', 'm', 'l'] as const, 'm'),
       density: pick(m.density, ['low', 'mid', 'high'] as const, 'mid'),
       theme: pick(m.theme, ['day', 'sunset', 'night', 'snow'] as const, 'day'),
@@ -427,6 +515,13 @@ export function sanitizeSettings(v: unknown): MatchSettings {
     },
     topics: topics.length || packs.length ? topics : ['flags', 'history', 'law'],
     packs,
+    ticketDiff: pick(o.ticketDiff, ['any', 'easy', 'medium', 'hard'] as const, 'any'),
+    itemToggles: {
+      health: it.health !== false,
+      shield: it.shield !== false,
+      bomb: it.bomb !== false,
+      speed: it.speed !== false,
+    },
     bots: Number.isFinite(botsNum) ? Math.max(0, Math.min(16, botsNum)) : 8,
     difficulty: pick(o.difficulty, ['easy', 'normal', 'hard'] as const, 'normal'),
     duration: Number.isFinite(durNum) ? Math.max(60, Math.min(900, durNum)) : 180,

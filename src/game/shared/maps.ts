@@ -1,5 +1,5 @@
 // Детерминированная генерация карт + коллизии, лучи и навигация ботов.
-import { DENSITY_INFO, HB, MapConfig, SIZE_INFO } from './types';
+import { DENSITY_INFO, HB, ItemKind, MapConfig, SIZE_INFO } from './types';
 
 export type BoxKind = 'wall' | 'crate' | 'container' | 'pillar' | 'building' | 'barrier' | 'platform' | 'car' | 'rock';
 
@@ -19,12 +19,18 @@ export interface NavGrid {
   blocked: Uint8Array;
 }
 
+export interface ItemSpot {
+  x: number;
+  z: number;
+  k: ItemKind;
+}
+
 export interface MapData {
   key: string;
   half: number;
   boxes: Box[];
   spawns: [number, number][];
-  packs: [number, number][];
+  items: ItemSpot[];
   nav: NavGrid;
 }
 
@@ -223,6 +229,129 @@ function genRuins(B: Builder, k: number) {
       }
     }
   }
+}
+
+function genFort(B: Builder, k: number) {
+  const H = B.half;
+  const R = Math.min(9, H * 0.36);
+  // цитадель: стены с проходами по центру каждой стороны
+  const seg = (R - 1.6) / 2;
+  B.addRot({ x: -(1.6 + seg), z: -R, hw: seg, hd: 0.35, h: 3, kind: 'wall', c: 1 });
+  B.addRot({ x: 1.6 + seg, z: -R, hw: seg, hd: 0.35, h: 3, kind: 'wall', c: 1 });
+  B.addRot({ x: R, z: R, hw: 1.1, hd: 1.1, h: 5.5, kind: 'pillar', c: 0 });
+  B.add({ x: 0, z: 0, hw: 2.6, hd: 2.6, h: 1.2, kind: 'platform', c: 0 });
+  B.addRot({ x: 0, z: R * 0.55, hw: 1.2, hd: 0.6, h: 0.6, kind: 'crate', c: 1 }, 0.05);
+  // внешнее кольцо укрытий с башнями
+  const R2 = Math.min(H - 4, R + 9 + (H - 22) * 0.35);
+  const len = (R2 - 3.5) / 2;
+  if (len > 2.6) {
+    // сегменты от 3.5 до R2-4.5: широкие проходы у башен и по центру
+    B.addRot({ x: -(3.5 + len) + 2.25, z: -R2, hw: len - 2.25, hd: 0.4, h: 1.2, kind: 'barrier', c: 0 });
+    B.addRot({ x: 3.5 + len - 2.25, z: -R2, hw: len - 2.25, hd: 0.4, h: 2.4, kind: 'wall', c: 2 });
+  }
+  B.addRot({ x: R2, z: R2, hw: 1.6, hd: 1.6, h: 4, kind: 'building', c: B.ri(0, 2) });
+  // камни между кольцами и снаружи
+  const n = Math.round((4 + H / 6) * k);
+  for (let i = 0, tries = 0; i < n && tries < 150; tries++) {
+    const x = B.snap(B.r(1, H - 2.5)), z = B.snap(B.r(0, H - 2.5));
+    const d = Math.max(Math.abs(x), Math.abs(z));
+    if (d < R + 2 || Math.abs(d - R2) < 2.5 || d > H - 3.5) continue;
+    const roll = B.rnd();
+    if (B.addRot({ x, z, hw: roll < 0.5 ? 0.6 : 1, hd: roll < 0.5 ? 0.6 : 0.8, h: roll < 0.3 ? 0.6 : roll < 0.75 ? 1.2 : 2.6, kind: roll < 0.5 ? 'crate' : 'rock', c: B.ri(0, 2) }, 1.6)) i++;
+  }
+}
+
+function genSchool(B: Builder, k: number) {
+  const H = B.half;
+  const W = 9, gap = 3, door = 1.2, t = 0.3;
+  const n = Math.max(1, Math.floor((H - 3) / (W + gap)));
+  // актовый зал в центре
+  B.add({ x: 0, z: 0, hw: 2.2, hd: 1.4, h: 0.6, kind: 'platform', c: 0 });
+  B.addRot({ x: 2.6, z: 0, hw: 0.45, hd: 0.45, h: 3.5, kind: 'pillar', c: 0 }, 0.05);
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const x0 = gap + i * (W + gap), z0 = gap + j * (W + gap);
+      const x1 = x0 + W, z1 = z0 + W;
+      if (x1 > H - 1 || z1 > H - 1) continue;
+      const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+      const segW = (W / 2 - door) / 2;
+      const h = 3;
+      const c = B.ri(0, 2);
+      // четыре стены с дверью посередине (кроме случайной глухой)
+      const solidSide = B.ri(0, 5); // 0..3 — глухая стена, 4-5 — все с дверями
+      const wall = (side: number, a: number, b: number, fixed: number, horiz: boolean) => {
+        if (solidSide === side) {
+          const m = (a + b) / 2, half = (b - a) / 2;
+          B.addRot(horiz ? { x: m, z: fixed, hw: half, hd: t, h, kind: 'wall', c } : { x: fixed, z: m, hw: t, hd: half, h, kind: 'wall', c });
+          return;
+        }
+        const mid = (a + b) / 2;
+        for (const [p0, p1] of [[a, mid - door], [mid + door, b]]) {
+          const m = (p0 + p1) / 2;
+          B.addRot(horiz ? { x: m, z: fixed, hw: segW, hd: t, h, kind: 'wall', c } : { x: fixed, z: m, hw: t, hd: segW, h, kind: 'wall', c });
+        }
+      };
+      wall(0, x0, x1, z0, true);
+      wall(1, x0, x1, z1, true);
+      wall(2, z0, z1, x0, false);
+      wall(3, z0, z1, x1, false);
+      // парты рядами
+      const rows = k > 1.2 ? 3 : 2, cols = k < 0.8 ? 2 : 3;
+      for (let r = 0; r < rows; r++) {
+        for (let q = 0; q < cols; q++) {
+          const dx = cx - (cols - 1) * 1.1 + q * 2.2;
+          const dz = cz - 0.6 + r * 1.9;
+          B.addRot({ x: dx, z: dz, hw: 0.75, hd: 0.4, h: 0.6, kind: 'crate', c: 1 });
+        }
+      }
+      // учительский стол
+      B.addRot({ x: cx, z: z0 + 1.6, hw: 1, hd: 0.45, h: 1.2, kind: 'crate', c: 2 });
+    }
+  }
+  // шкафчики вдоль коридоров
+  const lockers = Math.round(2 * k);
+  for (let q = 0, tries = 0; q < lockers && tries < 40; tries++) {
+    const along = B.snap(B.r(6, H - 4));
+    if (B.addRot({ x: 1.3, z: along, hw: 0.35, hd: 1.2, h: 2, kind: 'container', c: B.ri(0, 3) }, 1.5)) q++;
+  }
+}
+
+function genBunker(B: Builder, k: number) {
+  const H = B.half;
+  const C = 8, t = 0.5, door = 1.1, h = 3.2;
+  const lines: number[] = [];
+  for (let v = 4; v < H - 3; v += C) lines.push(v);
+  // сегменты стен между узлами решётки (квадрант x>=0, z>=0, потом симметрия)
+  for (const zl of lines) {
+    for (let xa = 0; xa < H - 3; xa += C) {
+      const xb = Math.min(xa + C, H - 1);
+      if (xb - xa < 3) continue;
+      const roll = B.rnd();
+      if (roll < 0.14 * (2 - k)) continue; // проём во всю стену — большой зал
+      const c = B.ri(0, 2);
+      if (roll < 0.8) {
+        const mid = (xa + xb) / 2;
+        for (const [p0, p1] of [[xa, mid - door], [mid + door, xb]]) {
+          if (p1 - p0 < 0.8) continue;
+          B.addRot({ x: (p0 + p1) / 2, z: zl, hw: (p1 - p0) / 2, hd: t, h, kind: 'wall', c });
+        }
+      } else {
+        B.addRot({ x: (xa + xb) / 2, z: zl, hw: (xb - xa) / 2, hd: t, h, kind: 'wall', c });
+      }
+    }
+  }
+  // колонны на узлах, ящики в комнатах
+  for (const xl of lines) {
+    for (const zl of lines) {
+      if (B.rnd() < 0.5) B.addRot({ x: xl, z: zl, hw: 0.7, hd: 0.7, h, kind: 'pillar', c: 1 });
+    }
+  }
+  const crates = Math.round((3 + H / 5) * k);
+  for (let i = 0, tries = 0; i < crates && tries < 150; tries++) {
+    const x = B.snap(B.r(1, H - 2.5)), z = B.snap(B.r(0, H - 2.5));
+    if (B.addRot({ x, z, hw: 0.6, hd: 0.6, h: B.rnd() < 0.6 ? 1.2 : 0.6, kind: 'crate', c: B.ri(0, 2) }, 1.2)) i++;
+  }
+  B.add({ x: 0, z: 0, hw: 1.2, hd: 1.2, h: 0.6, kind: 'platform', c: 0 });
 }
 
 function buildNav(half: number, boxes: Box[]): NavGrid {
@@ -519,49 +648,65 @@ export function buildMap(cfg: MapConfig): MapData {
   if (hit) return hit;
   const half = SIZE_INFO[cfg.size].half;
   const k = DENSITY_INFO[cfg.density].k;
-  const rnd = mulberry32(cfg.seed * 7919 + cfg.layout.length * 104729 + half);
-  const B = new Builder(half, rnd);
-  if (cfg.layout === 'arena') genArena(B, k);
-  else if (cfg.layout === 'city') genCity(B, k);
-  else if (cfg.layout === 'warehouse') genWarehouse(B, k);
-  else genRuins(B, k);
-  const inner = B.boxes.slice();
-  // периметр
-  B.addRot({ x: 0, z: -(half + 0.5), hw: half + 1, hd: 0.5, h: 4, kind: 'wall', c: 0 });
-  const boxes = B.boxes;
-  const nav = buildNav(half, boxes);
-
-  // самая большая связная область проходимых клеток
-  const N = nav.n * nav.n;
-  const label = new Int32Array(N).fill(-1);
-  const queue = new Int32Array(N);
+  let inner: Box[] = [];
+  let boxes: Box[] = [];
+  let nav: NavGrid = { n: 1, half, blocked: new Uint8Array(1) };
+  let label = new Int32Array(1);
   let bestLabel = -1;
-  let bestSize = 0;
-  let lab = 0;
-  for (let i = 0; i < N; i++) {
-    if (nav.blocked[i] || label[i] >= 0) continue;
-    let head = 0, tail = 0, size = 0;
-    queue[tail++] = i;
-    label[i] = lab;
-    while (head < tail) {
-      const c = queue[head++];
-      size++;
-      const cx = c % nav.n;
-      const nb = [cx > 0 ? c - 1 : -1, cx < nav.n - 1 ? c + 1 : -1, c - nav.n, c + nav.n];
-      for (const q of nb) {
-        if (q < 0 || q >= N || nav.blocked[q] || label[q] >= 0) continue;
-        label[q] = lab;
-        queue[tail++] = q;
+  // если карта распалась на изолированные куски — пробуем следующий внутренний сид (детерминированно)
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const rnd = mulberry32(cfg.seed * 7919 + cfg.layout.length * 104729 + half + attempt * 65537);
+    const B = new Builder(half, rnd);
+    if (cfg.layout === 'arena') genArena(B, k);
+    else if (cfg.layout === 'city') genCity(B, k);
+    else if (cfg.layout === 'warehouse') genWarehouse(B, k);
+    else if (cfg.layout === 'fort') genFort(B, k);
+    else if (cfg.layout === 'school') genSchool(B, k);
+    else if (cfg.layout === 'bunker') genBunker(B, k);
+    else genRuins(B, k);
+    inner = B.boxes.slice();
+    // периметр
+    B.addRot({ x: 0, z: -(half + 0.5), hw: half + 1, hd: 0.5, h: 4, kind: 'wall', c: 0 });
+    boxes = B.boxes;
+    nav = buildNav(half, boxes);
+
+    // самая большая связная область проходимых клеток
+    const N = nav.n * nav.n;
+    label = new Int32Array(N).fill(-1);
+    const queue = new Int32Array(N);
+    let bestSize = 0;
+    let free = 0;
+    let lab = 0;
+    bestLabel = -1;
+    for (let i = 0; i < N; i++) {
+      if (nav.blocked[i]) continue;
+      free++;
+      if (label[i] >= 0) continue;
+      let head = 0, tail = 0, size = 0;
+      queue[tail++] = i;
+      label[i] = lab;
+      while (head < tail) {
+        const c = queue[head++];
+        size++;
+        const cx = c % nav.n;
+        const nb = [cx > 0 ? c - 1 : -1, cx < nav.n - 1 ? c + 1 : -1, c - nav.n, c + nav.n];
+        for (const q of nb) {
+          if (q < 0 || q >= N || nav.blocked[q] || label[q] >= 0) continue;
+          label[q] = lab;
+          queue[tail++] = q;
+        }
       }
+      if (size > bestSize) { bestSize = size; bestLabel = lab; }
+      lab++;
     }
-    if (size > bestSize) { bestSize = size; bestLabel = lab; }
-    lab++;
+    if (free > 0 && bestSize / free >= 0.7) break;
   }
 
   const collect = (minClear: number, step: number) => {
     const out: [number, number][] = [];
-    for (let x = -half + 2; x <= half - 2; x += step) {
-      for (let z = -half + 2; z <= half - 2; z += step) {
+    // центры клеток навсетки (x.5) — тогда точка и её зеркало (-x,-z) лежат в зеркальных клетках
+    for (let x = -half + 2.5; x <= half - 2.5; x += step) {
+      for (let z = -half + 2.5; z <= half - 2.5; z += step) {
         const c = cellOf(nav, x, z);
         if (nav.blocked[c] || label[c] !== bestLabel) continue;
         if (clearance(inner, x, z) < minClear) continue;
@@ -570,7 +715,7 @@ export function buildMap(cfg: MapConfig): MapData {
     }
     return out;
   };
-  let cands = collect(1.4, 2);
+  let cands = collect(1.4, 1);
   if (cands.length < 16) cands = collect(0.9, 1);
   if (!cands.length) cands.push([half - 3, half - 3], [-half + 3, -half + 3], [half - 3, -half + 3], [-half + 3, half - 3]);
 
@@ -603,15 +748,49 @@ export function buildMap(cfg: MapConfig): MapData {
     const d = Math.hypot(c[0] - target[0], c[1] - target[1]);
     if (d < pd) { pd = d; pk = c; }
   }
-  const packs: [number, number][] = [];
+  const candSet = new Set(cands.map((c) => `${c[0]},${c[1]}`));
+  const inCands = (x: number, z: number) => candSet.has(`${x},${z}`);
+  const items: ItemSpot[] = [];
   const rots: [number, number][] = [[pk[0], pk[1]], [-pk[1], pk[0]], [-pk[0], -pk[1]], [pk[1], -pk[0]]];
-  for (const p of rots) if (clearance(inner, p[0], p[1]) >= 0.9) packs.push(p);
-  if (packs.length < 2) {
-    packs.length = 0;
-    for (let i = 1; i < spawns.length && packs.length < 4; i += 3) packs.push(spawns[i]);
+  for (const p of rots) if (inCands(p[0], p[1])) items.push({ x: p[0], z: p[1], k: 'health' });
+  if (items.length < 2) {
+    items.length = 0;
+    for (let i = 1; i < spawns.length && items.length < 4; i += 3) items.push({ x: spawns[i][0], z: spawns[i][1], k: 'health' });
   }
 
-  const data: MapData = { key, half, boxes, spawns, packs, nav };
+  // щит, скорость, бомба — парами, симметрично через центр, подальше от спавнов и друг от друга
+  const taken: [number, number][] = [...spawns, ...items.map((i) => [i.x, i.z] as [number, number])];
+  const kinds: ItemKind[] = ['shield', 'speed', 'bomb'];
+  const pairs = half >= 30 ? 2 : 1;
+  for (let round = 0; round < pairs; round++) {
+    for (const kind of kinds) {
+      const farthest = (preferMirror: boolean): [number, number] | null => {
+        let best: [number, number] | null = null;
+        let bs = -Infinity;
+        for (const c of cands) {
+          if (preferMirror && !inCands(-c[0], -c[1])) continue;
+          let m = Infinity;
+          for (const tk of taken) m = Math.min(m, Math.hypot(c[0] - tk[0], c[1] - tk[1]));
+          // предпочитаем середину карты, а не углы
+          const score = m - Math.hypot(c[0], c[1]) * 0.25;
+          if (score > bs) { bs = score; best = c; }
+        }
+        return best;
+      };
+      const a = farthest(true) ?? farthest(false);
+      if (!a) break;
+      items.push({ x: a[0], z: a[1], k: kind });
+      taken.push(a);
+      const mirror: [number, number] = [-a[0], -a[1]];
+      const b = inCands(mirror[0], mirror[1]) ? mirror : farthest(false);
+      if (b && !(b[0] === a[0] && b[1] === a[1])) {
+        items.push({ x: b[0], z: b[1], k: kind });
+        taken.push(b);
+      }
+    }
+  }
+
+  const data: MapData = { key, half, boxes, spawns, items, nav };
   cache.set(key, data);
   if (cache.size > 24) {
     const firstKey = cache.keys().next().value;
